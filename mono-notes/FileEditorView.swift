@@ -2,7 +2,7 @@ import SwiftUI
 
 struct FileEditorView: View {
     @EnvironmentObject var store: AppStore
-    @Environment(\. dismiss) private var dismiss
+    @Environment(\.dismiss) private var dismiss
 
     let initialFile: FileItem
     let tab: AppTab
@@ -95,7 +95,6 @@ struct FileEditorView: View {
                     })
                 }
 
-                // New item input
                 HStack(spacing: 12) {
                     Image(systemName: "plus")
                         .font(.system(size: 13))
@@ -138,7 +137,6 @@ struct FileEditorView: View {
         file.updatedAt = Date()
         store.updateFile(file, tab: tab)
         newItemText = ""
-        // keep focus for rapid entry
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { newItemFocused = true }
     }
 }
@@ -158,7 +156,7 @@ struct ListItemRow: View {
             } label: {
                 Image(systemName: item.checked ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 18))
-                    .foregroundStyle(item.checked ? .secondary : .tertiary)
+                    .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
             }
             .frame(width: 20)
 
@@ -167,8 +165,8 @@ struct ListItemRow: View {
                 set: { item.text = $0; onChange() }
             ))
             .font(.system(.body, design: .monospaced))
-            .foregroundStyle(item.checked ? .tertiary : .primary)
-            .strikethrough(item.checked, color: .tertiary)
+            .foregroundStyle(item.checked ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+            .strikethrough(item.checked, color: Color(.tertiaryLabel))
             .autocorrectionDisabled()
             .textInputAutocapitalization(.never)
 
