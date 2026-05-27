@@ -99,10 +99,20 @@ struct FileEditorView: View {
                         isActive: focusedItemID == file.listItems[idx].id,
                         onFocus: { focusedItemID = file.listItems[idx].id },
                         onEnter: {
-                            let newItem = addNewItem(after: file.listItems[idx].id)
-                            save()
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                focusedItemID = newItem.id
+                            let item = file.listItems[idx]
+                            if item.text.isEmpty {
+                                // Empty row: unindent child, nop at root
+                                if item.depth > 0 {
+                                    file.listItems[idx].depth -= 1
+                                    save()
+                                }
+                            } else {
+                                // Non-empty: add sibling below
+                                let newItem = addNewItem(after: item.id)
+                                save()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                    focusedItemID = newItem.id
+                                }
                             }
                         },
                         onIndent: {
@@ -188,14 +198,12 @@ struct OutlineItemRow: View {
                 Spacer().frame(width: CGFloat(item.depth) * 20)
             }
 
-            // Bullet — bolder middle dot
             Text("\u{2022}")
                 .font(.system(size: 16, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
                 .frame(width: 24, alignment: .center)
                 .onTapGesture { onCheck() }
 
-            // UIKit-backed text field to intercept backspace
             OutlineTextField(
                 text: $item.text,
                 isActive: isActive,
@@ -247,9 +255,11 @@ struct OutlineTextField: UIViewRepresentable {
             context.coordinator.parent.onUnindent()
         }
 
-        // Keyboard toolbar
-        let toolbar = UIToolbar()
-        toolbar.sizeToFit()
+        // Accessory toolbar — explicit frame height so it sits above keyboard with breathing room
+        let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 52))
+        bar.barTintColor = UIColor.secondarySystemBackground
+        bar.isTranslucent = false
+
         let unindentBtn = UIBarButtonItem(
             image: UIImage(systemName: "arrow.left.to.line"),
             style: .plain,
@@ -262,10 +272,12 @@ struct OutlineTextField: UIViewRepresentable {
             target: context.coordinator,
             action: #selector(Coordinator.tappedIndent)
         )
+        let gap = UIBarButtonItem(barButtonSystemItem: .fixedSpace, target: nil, action: nil)
+        gap.width = 20
         let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-        toolbar.items = [unindentBtn, indentBtn, flex]
-        field.inputAccessoryView = toolbar
+        bar.items = [unindentBtn, gap, indentBtn, flex]
 
+        field.inputAccessoryView = bar
         return field
     }
 
@@ -277,7 +289,6 @@ struct OutlineTextField: UIViewRepresentable {
             field.text = text
         }
 
-        // Strike-through for checked items
         if isChecked {
             let attrs: [NSAttributedString.Key: Any] = [
                 .strikethroughStyle: NSUnderlineStyle.single.rawValue,
@@ -292,7 +303,6 @@ struct OutlineTextField: UIViewRepresentable {
             ]
         }
 
-        // Focus management
         if isActive && !field.isFirstResponder {
             DispatchQueue.main.async { field.becomeFirstResponder() }
         } else if !isActive && field.isFirstResponder {
@@ -341,7 +351,6 @@ class BackspaceAwareTextField: UITextField {
     var onBackspaceAtStart: (() -> Void)?
 
     override func deleteBackward() {
-        // Fire BEFORE super so text is still empty/cursor at 0
         let cursorAtStart: Bool = {
             guard let range = selectedTextRange else { return false }
             return range.isEmpty && offset(from: beginningOfDocument, to: range.start) == 0
@@ -350,7 +359,6 @@ class BackspaceAwareTextField: UITextField {
 
         if cursorAtStart || isEmpty {
             onBackspaceAtStart?()
-            // If text was empty, don't call super (nothing to delete)
             if isEmpty { return }
         }
         super.deleteBackward()
