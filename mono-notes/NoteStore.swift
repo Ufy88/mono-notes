@@ -20,17 +20,27 @@ final class NoteStore: ObservableObject {
         return note
     }
 
+    /// Update note body and updatedAt only if content actually changed
     func update(_ note: Note) {
         guard let idx = notes.firstIndex(where: { $0.id == note.id }) else { return }
-        var updated = note
-        updated.updatedAt = Date()
-        notes[idx] = updated
-        notes.sort { $0.updatedAt > $1.updatedAt }
-        save()
+        let existing = notes[idx]
+        // Only bump updatedAt if body changed
+        if existing.body != note.body {
+            var updated = note
+            updated.updatedAt = Date()
+            notes[idx] = updated
+            notes.sort { $0.updatedAt > $1.updatedAt }
+            save()
+        }
     }
 
     func delete(at offsets: IndexSet) {
         notes.remove(atOffsets: offsets)
+        save()
+    }
+
+    func delete(note: Note) {
+        notes.removeAll { $0.id == note.id }
         save()
     }
 
