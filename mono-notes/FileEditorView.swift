@@ -2,68 +2,184 @@ import SwiftUI
 
 struct FileEditorView: View {
     @EnvironmentObject var store: AppStore
-    @Binding var sidebarOpen: Bool
+    @Environment(\. dismiss) private var dismiss
+
+    let initialFile: FileItem
     let tab: AppTab
 
-    // Local copy of file for editing
     @State private var file: FileItem
+    @FocusState private var textFocused: Bool
+    @FocusState private var newItemFocused: Bool
+    @State private var newItemText = ""
 
-    init(file: FileItem, tab: AppTab, sidebarOpen: Binding<Bool>) {
-        _file = State(initialValue: file)
-        _sidebarOpen = sidebarOpen
+    init(file: FileItem, tab: AppTab) {
+        self.initialFile = file
         self.tab = tab
+        _file = State(initialValue: file)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Top bar
-            HStack {
-                Button { withAnimation { sidebarOpen.toggle() } } label: {
-                    Image(systemName: "line.3.horizontal")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.primary)
-                }
-                Spacer()
-                Text(file.dateLabel)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 60)
-            .padding(.bottom, 12)
-
+            toolbar
             Divider()
-
-            // Editor
-            if tab == .notes {
-                NoteBodyEditor(file: $file, tab: tab)
+            if file.kind == .note {
+                noteEditor
             } else {
-                NoteBodyEditor(file: $file, tab: tab)
+                listEditor
             }
         }
         .background(Color(.systemBackground))
+        .onAppear {
+            file = store.findFile(id: initialFile.id) ?? initialFile
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                if file.kind == .note { textFocused = true }
+            }
+        }
+    }
+
+    // MARK: - Toolbar
+
+    private var toolbar: some View {
+        HStack(spacing: 16) {
+            Text(file.dateLabel)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.tertiary)
+            Spacer()
+            if file.kind == .note {
+                Text(wordCountLabel)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.quaternary)
+                    .animation(.none, value: wordCountLabel)
+            } else {
+                Text(checkCountLabel)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.quaternary)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+    }
+
+    // MARK: - Note editor
+
+    private var noteEditor: some View {
+        TextEditor(text: Binding(
+            get: { file.body },
+            set: { newVal in
+                file.body = newVal
+                file.updatedAt = Date()
+                store.updateFile(file, tab: tab)
+            }
+        ))
+        .font(.system(.body, design: .monospaced))
+        .focused($textFocused)
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .scrollContentBackground(.hidden)
+        .background(Color(.systemBackground))
+    }
+
+    // MARK: - List editor
+
+    private var listEditor: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach($file.listItems) { $item in
+                    ListItemRow(item: $item, onDelete: {
+                        file.listItems.removeAll { $0.id == item.id }
+                        file.updatedAt = Date()
+                        store.updateFile(file, tab: tab)
+                    }, onChange: {
+                        file.updatedAt = Date()
+                        store.updateFile(file, tab: tab)
+                    })
+                }
+
+                // New item input
+                HStack(spacing: 12) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 20)
+                    TextField("new item", text: $newItemText)
+                        .font(.system(.body, design: .monospaced))
+                        .focused($newItemFocused)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .submitLabel(.done)
+                        .onSubmit { commitNewItem() }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 14)
+            }
+            .padding(.bottom, 80)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private var wordCountLabel: String {
+        let words = file.body.split { $0.isWhitespace }.count
+        let chars = file.body.count
+        return "\(words)w \(chars)c"
+    }
+
+    private var checkCountLabel: String {
+        let done = file.listItems.filter(\.checked).count
+        let total = file.listItems.count
+        return "\(done)/\(total)"
+    }
+
+    private func commitNewItem() {
+        let text = newItemText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { newItemFocused = false; return }
+        let item = ListItem(text: text)
+        file.listItems.append(item)
+        file.updatedAt = Date()
+        store.updateFile(file, tab: tab)
+        newItemText = ""
+        // keep focus for rapid entry
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { newItemFocused = true }
     }
 }
 
-// MARK: - Note body editor (plain text for now; list editor iteration 3)
+// MARK: - List item row
 
-struct NoteBodyEditor: View {
-    @EnvironmentObject var store: AppStore
-    @Binding var file: FileItem
-    let tab: AppTab
+struct ListItemRow: View {
+    @Binding var item: ListItem
+    let onDelete: () -> Void
+    let onChange: () -> Void
 
     var body: some View {
-        TextEditor(text: $file.body)
-            .font(.system(.body, design: .monospaced))
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .scrollContentBackground(.hidden)
-            .onChange(of: file.body) { _, newValue in
-                var updated = file
-                updated.body = newValue
-                updated.updatedAt = Date()
-                store.updateFile(updated, tab: tab)
-                file = updated
+        HStack(spacing: 12) {
+            Button {
+                item.checked.toggle()
+                onChange()
+            } label: {
+                Image(systemName: item.checked ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(item.checked ? .secondary : .tertiary)
             }
+            .frame(width: 20)
+
+            TextField("", text: Binding(
+                get: { item.text },
+                set: { item.text = $0; onChange() }
+            ))
+            .font(.system(.body, design: .monospaced))
+            .foregroundStyle(item.checked ? .tertiary : .primary)
+            .strikethrough(item.checked, color: .tertiary)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) { onDelete() } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
 }

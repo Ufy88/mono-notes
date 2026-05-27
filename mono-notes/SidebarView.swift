@@ -11,34 +11,51 @@ struct SidebarView: View {
     @State private var showNewFolderAlert = false
     @State private var newFolderName = ""
     @State private var draggingID: UUID? = nil
+    @State private var searchQuery = ""
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             tabBar
                 .padding(.top, 60)
                 .padding(.horizontal, 16)
-                .padding(.bottom, 12)
+                .padding(.bottom, 10)
+
+            searchField
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
 
             Divider()
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    // Root-level drop zone (top)
-                    RootDropZone(tab: activeTab, afterID: nil, draggingID: $draggingID)
-
-                    ForEach(Array(store.roots(for: activeTab).enumerated()), id: \.element.id) { idx, child in
-                        SidebarChildView(
-                            child: child,
-                            tab: activeTab,
-                            depth: 0,
-                            selectedFile: $selectedFile,
-                            selectedTab: $selectedTab,
-                            sidebarOpen: $sidebarOpen,
-                            draggingID: $draggingID
-                        )
-
-                        // Drop zone after each root item
-                        RootDropZone(tab: activeTab, afterID: child.id, draggingID: $draggingID)
+                    if searchQuery.isEmpty {
+                        // Normal tree view
+                        RootDropZone(tab: activeTab, afterID: nil, draggingID: $draggingID)
+                        ForEach(Array(store.roots(for: activeTab).enumerated()), id: \.element.id) { _, child in
+                            SidebarChildView(
+                                child: child, tab: activeTab, depth: 0,
+                                selectedFile: $selectedFile, selectedTab: $selectedTab,
+                                sidebarOpen: $sidebarOpen, draggingID: $draggingID
+                            )
+                            RootDropZone(tab: activeTab, afterID: child.id, draggingID: $draggingID)
+                        }
+                    } else {
+                        // Flat search results
+                        let results = store.search(query: searchQuery, in: activeTab)
+                        if results.isEmpty {
+                            Text("no results")
+                                .font(.system(.footnote, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 16)
+                        } else {
+                            ForEach(results) { file in
+                                SearchResultRow(file: file, query: searchQuery,
+                                               selectedFile: $selectedFile, selectedTab: $selectedTab,
+                                               activeTab: activeTab, sidebarOpen: $sidebarOpen)
+                            }
+                        }
                     }
                 }
                 .padding(.top, 4)
@@ -63,11 +80,34 @@ struct SidebarView: View {
         }
     }
 
-    // MARK: - Tab bar
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
+            TextField("search", text: $searchQuery)
+                .font(.system(.footnote, design: .monospaced))
+                .focused($searchFocused)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            if !searchQuery.isEmpty {
+                Button { searchQuery = ""; searchFocused = false } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color(.systemFill))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
     private var tabBar: some View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.self) { tab in
-                Button { withAnimation { activeTab = tab } } label: {
+                Button { withAnimation { activeTab = tab; searchQuery = "" } } label: {
                     Text(tab.rawValue)
                         .font(.system(.footnote, design: .monospaced))
                         .fontWeight(activeTab == tab ? .semibold : .regular)
@@ -81,7 +121,6 @@ struct SidebarView: View {
         }
     }
 
-    // MARK: - Bottom bar
     private var bottomBar: some View {
         HStack {
             Button {
@@ -90,12 +129,12 @@ struct SidebarView: View {
                 selectedTab = activeTab
                 withAnimation { sidebarOpen = false }
             } label: {
-                Label(activeTab == .notes ? "New note" : "New list", systemImage: "square.and.pencil")
+                Label(activeTab == .notes ? "note" : "list", systemImage: "square.and.pencil")
                     .font(.system(.footnote, design: .monospaced))
             }
             Spacer()
             Button { showNewFolderAlert = true } label: {
-                Label("New folder", systemImage: "folder.badge.plus")
+                Label("folder", systemImage: "folder.badge.plus")
                     .font(.system(.footnote, design: .monospaced))
             }
         }
@@ -103,7 +142,56 @@ struct SidebarView: View {
     }
 }
 
-// MARK: - Root-level drop zone
+// MARK: - Search result row
+
+struct SearchResultRow: View {
+    @EnvironmentObject var store: AppStore
+    let file: FileItem
+    let query: String
+    @Binding var selectedFile: FileItem?
+    @Binding var selectedTab: AppTab
+    let activeTab: AppTab
+    @Binding var sidebarOpen: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(file.displayTitle)
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundStyle(selectedFile?.id == file.id ? .primary : .secondary)
+                .lineLimit(1)
+            highlightedPreview
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(selectedFile?.id == file.id ? Color(.systemFill) : .clear)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedFile = file
+            selectedTab = activeTab
+            store.setLastOpened(id: file.id, tab: activeTab)
+            withAnimation { sidebarOpen = false }
+        }
+    }
+
+    @ViewBuilder
+    private var highlightedPreview: some View {
+        // Find first matching snippet
+        let text = file.kind == .note ? file.body : file.listItems.map(\.text).joined(separator: " ")
+        let lower = text.lowercased()
+        let q = query.lowercased()
+        if let range = lower.range(of: q) {
+            let start = text.index(range.lowerBound, offsetBy: -min(20, text.distance(from: text.startIndex, to: range.lowerBound)))
+            let snippet = String(text[start...].prefix(60))
+            Text(snippet)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+    }
+}
+
+// MARK: - Root drop zone
 
 struct RootDropZone: View {
     @EnvironmentObject var store: AppStore
@@ -119,8 +207,7 @@ struct RootDropZone: View {
             .padding(.horizontal, 12)
             .animation(.easeInOut(duration: 0.15), value: isTargeted)
             .dropDestination(for: DragPayload.self) { items, _ in
-                guard let payload = items.first,
-                      payload.id != draggingID || true else { return false }
+                guard let payload = items.first else { return false }
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                     store.move(id: payload.id, toFolder: nil, afterID: afterID, tab: tab)
                 }
@@ -155,7 +242,6 @@ struct SidebarChildView: View {
         }
     }
 
-    // MARK: - Folder row
     @ViewBuilder
     private func folderRow(_ folder: Folder) -> some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -183,7 +269,6 @@ struct SidebarChildView: View {
             .contentShape(Rectangle())
             .onTapGesture { store.toggleFolder(id: folder.id, tab: tab) }
             .onLongPressGesture { localRename = folder.name; showRenameAlert = true }
-            // Make folder a drop destination (drop INTO folder)
             .dropDestination(for: DragPayload.self) { items, _ in
                 guard let payload = items.first else { return false }
                 autoExpandTimer?.invalidate()
@@ -191,19 +276,15 @@ struct SidebarChildView: View {
                     store.move(id: payload.id, toFolder: folder.id, afterID: nil, tab: tab)
                     store.expandFolder(id: folder.id, tab: tab)
                 }
-                draggingID = nil
-                isFolderDropTarget = false
+                draggingID = nil; isFolderDropTarget = false
                 return true
             } isTargeted: { targeted in
                 withAnimation(.easeInOut(duration: 0.15)) { isFolderDropTarget = targeted }
                 if targeted {
-                    // Auto-expand after 0.8s hold
                     autoExpandTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { _ in
                         store.expandFolder(id: folder.id, tab: tab)
                     }
-                } else {
-                    autoExpandTimer?.invalidate()
-                }
+                } else { autoExpandTimer?.invalidate() }
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) {
@@ -211,27 +292,16 @@ struct SidebarChildView: View {
                     else { showDeleteFolderAlert = true }
                 } label: { Label("Delete", systemImage: "trash") }
             }
-            // Make folder draggable
             .draggable(DragPayload(id: folder.id, isFolder: true)) {
-                dragPreview(label: folder.name, icon: "folder")
-                    .onAppear { draggingID = folder.id }
+                dragPreview(label: folder.name, icon: "folder").onAppear { draggingID = folder.id }
             }
 
-            // Children + inner drop zones
             if folder.isExpanded {
-                // Drop zone at top of folder children
                 FolderDropZone(tab: tab, folderID: folder.id, afterID: nil, draggingID: $draggingID)
-
                 ForEach(folder.children) { child in
-                    SidebarChildView(
-                        child: child,
-                        tab: tab,
-                        depth: depth + 1,
-                        selectedFile: $selectedFile,
-                        selectedTab: $selectedTab,
-                        sidebarOpen: $sidebarOpen,
-                        draggingID: $draggingID
-                    )
+                    SidebarChildView(child: child, tab: tab, depth: depth + 1,
+                                     selectedFile: $selectedFile, selectedTab: $selectedTab,
+                                     sidebarOpen: $sidebarOpen, draggingID: $draggingID)
                     FolderDropZone(tab: tab, folderID: folder.id, afterID: child.id, draggingID: $draggingID)
                 }
             }
@@ -247,7 +317,6 @@ struct SidebarChildView: View {
         } message: { Text("This will delete everything inside.") }
     }
 
-    // MARK: - File row
     @ViewBuilder
     private func fileRow(_ file: FileItem) -> some View {
         HStack(spacing: 6) {
@@ -255,10 +324,12 @@ struct SidebarChildView: View {
                 .font(.system(.footnote))
                 .foregroundStyle(.secondary)
                 .frame(width: 12)
-            Text(file.displayTitle)
-                .font(.system(.footnote, design: .monospaced))
-                .foregroundStyle(selectedFile?.id == file.id ? .primary : .secondary)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(file.displayTitle)
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(selectedFile?.id == file.id ? .primary : .secondary)
+                    .lineLimit(1)
+            }
             Spacer()
             Text(file.dateLabel)
                 .font(.system(.caption2, design: .monospaced))
@@ -288,24 +359,19 @@ struct SidebarChildView: View {
         .animation(.easeInOut(duration: 0.15), value: draggingID)
     }
 
-    // MARK: - Drag preview
     private func dragPreview(label: String, icon: String) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(.footnote))
-            Text(label)
-                .font(.system(.footnote, design: .monospaced))
-                .lineLimit(1)
+            Image(systemName: icon).font(.system(.footnote))
+            Text(label).font(.system(.footnote, design: .monospaced)).lineLimit(1)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12).padding(.vertical, 8)
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .shadow(radius: 4)
     }
 }
 
-// MARK: - Drop zone inside a folder (between children)
+// MARK: - Folder drop zone
 
 struct FolderDropZone: View {
     @EnvironmentObject var store: AppStore

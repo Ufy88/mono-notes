@@ -9,7 +9,23 @@ final class AppStore: ObservableObject {
         return docs.appendingPathComponent("appdata.json")
     }()
 
-    init() { load() }
+    init() {
+        load()
+        if !data.didOnboard { onboard() }
+    }
+
+    // MARK: - Onboarding
+
+    private func onboard() {
+        var sample = FileItem(kind: .note)
+        sample.body = "mono-notes\n\nthis is your first note.\nmonospaced. minimal. local.\n\nswipe left to delete.\ndrag to reorder.\ntap folder icon to group."
+        sample.updatedAt = Date()
+        data.noteRoots.append(.file(sample))
+        data.lastOpenedID = sample.id
+        data.lastOpenedTab = AppTab.notes.rawValue
+        data.didOnboard = true
+        save()
+    }
 
     // MARK: - Convenience
 
@@ -25,6 +41,13 @@ final class AppStore: ObservableObject {
     func setRoots(_ roots: [FolderChild], for tab: AppTab) {
         if tab == .notes { data.noteRoots = roots } else { data.listRoots = roots }
         save()
+    }
+
+    // MARK: - Search (flat, across all items in tab)
+
+    func search(query: String, in tab: AppTab) -> [FileItem] {
+        guard !query.isEmpty else { return [] }
+        return allFiles(in: roots(for: tab)).filter { $0.matches(query: query) }
     }
 
     // MARK: - Create
@@ -60,7 +83,9 @@ final class AppStore: ObservableObject {
     // MARK: - Update
 
     func updateFile(_ file: FileItem, tab: AppTab) {
-        updateFileInRoots(&roots(for: tab, mutable: true), file: file, tab: tab)
+        var r = roots(for: tab)
+        updateFileInRoots(&r, file: file)
+        setRoots(r, for: tab)
     }
 
     // MARK: - Delete
@@ -80,7 +105,7 @@ final class AppStore: ObservableObject {
         setRoots(r, for: tab)
     }
 
-    // MARK: - Toggle folder expand
+    // MARK: - Toggle / expand folder
 
     func toggleFolder(id: UUID, tab: AppTab) {
         var r = roots(for: tab)
@@ -122,22 +147,16 @@ final class AppStore: ObservableObject {
         !data.noteRoots.isEmpty || !data.listRoots.isEmpty
     }
 
-    // MARK: - Drag & drop: move item to new parent / position
+    // MARK: - Move (drag & drop)
 
-    /// Move `draggedID` into `targetFolderID` (nil = root), placing it after `afterID` (nil = top).
     func move(id draggedID: UUID, toFolder targetFolderID: UUID?, afterID: UUID?, tab: AppTab) {
         var roots = self.roots(for: tab)
-
-        // 1. Extract the dragged child
         guard let dragged = extract(id: draggedID, from: &roots) else { return }
-
-        // 2. Insert at destination
         if let folderID = targetFolderID {
             insertChildInRoots(&roots, child: dragged, folderID: folderID, afterID: afterID)
         } else {
             insertAtRoot(&roots, child: dragged, afterID: afterID)
         }
-
         setRoots(roots, for: tab)
     }
 
@@ -157,11 +176,7 @@ final class AppStore: ObservableObject {
         data = decoded
     }
 
-    // MARK: - Private mutable roots helper
-
-    private func roots(for tab: AppTab, mutable: Bool) -> [FolderChild] {
-        tab == .notes ? data.noteRoots : data.listRoots
-    }
+    // MARK: - Private helpers
 
     private func appendToRoots(_ child: FolderChild, tab: AppTab) {
         if tab == .notes { data.noteRoots.append(child) }
@@ -172,8 +187,6 @@ final class AppStore: ObservableObject {
         if tab == .notes { data.noteRoots.insert(child, at: 0) }
         else { data.listRoots.insert(child, at: 0) }
     }
-
-    // MARK: - Recursive tree operations
 
     private func insertChild(_ child: FolderChild, intoFolderID id: UUID, tab: AppTab) {
         var r = roots(for: tab)
@@ -210,15 +223,10 @@ final class AppStore: ObservableObject {
     @discardableResult
     private func extract(id: UUID, from roots: inout [FolderChild]) -> FolderChild? {
         for i in roots.indices {
-            if roots[i].id == id {
-                let child = roots[i]
-                roots.remove(at: i)
-                return child
-            }
+            if roots[i].id == id { let c = roots[i]; roots.remove(at: i); return c }
             if case .folder(var f) = roots[i] {
                 if let found = extract(id: id, from: &f.children) {
-                    roots[i] = .folder(f)
-                    return found
+                    roots[i] = .folder(f); return found
                 }
             }
         }
@@ -235,17 +243,13 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func updateFileInRoots(_ roots: inout [FolderChild], file: FileItem, tab: AppTab) {
+    private func updateFileInRoots(_ roots: inout [FolderChild], file: FileItem) {
         for i in roots.indices {
             if case .file(let fi) = roots[i], fi.id == file.id {
-                roots[i] = .file(file)
-                if tab == .notes { data.noteRoots = roots }
-                else { data.listRoots = roots }
-                save()
-                return
+                roots[i] = .file(file); return
             }
             if case .folder(var f) = roots[i] {
-                updateFileInRoots(&f.children, file: file, tab: tab)
+                updateFileInRoots(&f.children, file: file)
                 roots[i] = .folder(f)
             }
         }
@@ -291,8 +295,7 @@ final class AppStore: ObservableObject {
         for child in roots {
             switch child {
             case .file(let fi): if fi.id == id { return fi }
-            case .folder(let f):
-                if let found = findFileInRoots(f.children, id: id) { return found }
+            case .folder(let f): if let found = findFileInRoots(f.children, id: id) { return found }
             }
         }
         return nil
