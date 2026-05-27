@@ -12,12 +12,13 @@ enum ItemKind: String, Codable {
     case note, list
 }
 
-// MARK: - List item (for checklist)
+// MARK: - List item
 
 struct ListItem: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var text: String = ""
     var checked: Bool = false
+    var depth: Int = 0          // 0 = root, 1 = child, 2 = grandchild, …
 }
 
 // MARK: - File
@@ -54,7 +55,6 @@ struct FileItem: Identifiable, Codable {
         return df.string(from: updatedAt)
     }
 
-    // Full-text search
     func matches(query: String) -> Bool {
         let q = query.lowercased()
         if kind == .note {
