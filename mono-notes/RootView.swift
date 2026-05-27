@@ -8,11 +8,9 @@ struct RootView: View {
 
     var body: some View {
         ZStack(alignment: .leading) {
-            // Main content
             mainContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // Dim overlay
             if sidebarOpen {
                 Color.black.opacity(0.25)
                     .ignoresSafeArea()
@@ -20,7 +18,6 @@ struct RootView: View {
                     .transition(.opacity)
             }
 
-            // Sidebar
             if sidebarOpen {
                 SidebarView(selectedFile: $selectedFile, selectedTab: $selectedTab, sidebarOpen: $sidebarOpen)
                     .frame(width: UIScreen.main.bounds.width * 0.8)
@@ -32,8 +29,6 @@ struct RootView: View {
         .onAppear { restoreLastOpened() }
     }
 
-    // MARK: - Main content
-
     @ViewBuilder
     private var mainContent: some View {
         if let file = selectedFile {
@@ -43,7 +38,7 @@ struct RootView: View {
         } else if store.hasAnyContent() {
             PlaceholderView(sidebarOpen: $sidebarOpen)
         } else {
-            EmptyScreenView(selectedFile: $selectedFile, selectedTab: $selectedTab)
+            EmptyScreenView(selectedFile: $selectedFile, selectedTab: $selectedTab, sidebarOpen: $sidebarOpen)
         }
     }
 
