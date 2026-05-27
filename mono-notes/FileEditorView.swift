@@ -1,11 +1,5 @@
 import SwiftUI
 
-// MARK: - Focus ID
-
-struct ListFocusID: Hashable {
-    let id: UUID
-}
-
 // MARK: - FileEditorView
 
 struct FileEditorView: View {
@@ -16,7 +10,7 @@ struct FileEditorView: View {
 
     @State private var file: FileItem
     @FocusState private var textFocused: Bool
-    @FocusState private var focusedItem: ListFocusID?
+    @State private var focusedItemID: UUID? = nil
 
     init(file: FileItem, tab: AppTab) {
         self.initialFile = file
@@ -40,11 +34,13 @@ struct FileEditorView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 if file.kind == .note {
                     textFocused = true
-                } else if let first = file.listItems.first {
-                    focusedItem = ListFocusID(id: first.id)
                 } else {
-                    let item = addNewItem(after: nil)
-                    focusedItem = ListFocusID(id: item.id)
+                    if file.listItems.isEmpty {
+                        let item = addNewItem(after: nil)
+                        focusedItemID = item.id
+                    } else {
+                        focusedItemID = file.listItems.first?.id
+                    }
                 }
             }
         }
@@ -99,43 +95,31 @@ struct FileEditorView: View {
                 ForEach(file.listItems.indices, id: \.self) { idx in
                     OutlineItemRow(
                         item: $file.listItems[idx],
+                        isActive: focusedItemID == file.listItems[idx].id,
+                        onFocus: { focusedItemID = file.listItems[idx].id },
                         onEnter: {
                             let newItem = addNewItem(after: file.listItems[idx].id)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                focusedItem = ListFocusID(id: newItem.id)
-                            }
                             save()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                focusedItemID = newItem.id
+                            }
                         },
                         onIndent: {
-                            // Arrow right → increase depth (max 4)
                             file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4)
                             save()
                         },
                         onUnindent: {
-                            // Arrow left or backspace at start of empty line → decrease depth
                             if file.listItems[idx].depth > 0 {
                                 file.listItems[idx].depth -= 1
                                 save()
-                            } else {
-                                // depth==0 and text empty → delete row, focus previous
+                            } else if file.listItems[idx].text.isEmpty {
                                 let prevID = idx > 0 ? file.listItems[idx - 1].id : nil
                                 file.listItems.remove(at: idx)
                                 save()
                                 if let pid = prevID {
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                        focusedItem = ListFocusID(id: pid)
+                                        focusedItemID = pid
                                     }
-                                }
-                            }
-                        },
-                        onDeleteEmpty: {
-                            // backspace on empty item at depth 0 → delete, go to previous
-                            let prevID = idx > 0 ? file.listItems[idx - 1].id : nil
-                            file.listItems.remove(at: idx)
-                            save()
-                            if let pid = prevID {
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                    focusedItem = ListFocusID(id: pid)
                                 }
                             }
                         },
@@ -143,22 +127,11 @@ struct FileEditorView: View {
                             file.listItems[idx].checked.toggle()
                             save()
                         },
-                        onChange: { save() },
-                        isFocused: Binding(
-                            get: { focusedItem == ListFocusID(id: file.listItems[idx].id) },
-                            set: { if $0 { focusedItem = ListFocusID(id: file.listItems[idx].id) } }
-                        )
+                        onChange: { save() }
                     )
                 }
             }
             .padding(.bottom, 120)
-        }
-        .onTapGesture {
-            // Tap on empty space below items → append new item
-            let item = addNewItem(after: file.listItems.last?.id)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                focusedItem = ListFocusID(id: item.id)
-            }
         }
     }
 
@@ -172,7 +145,8 @@ struct FileEditorView: View {
             depth = file.listItems[idx].depth
             insertIndex = idx + 1
         }
-        let item = ListItem(depth: depth)
+        var item = ListItem()
+        item.depth = depth
         file.listItems.insert(item, at: insertIndex)
         return item
     }
@@ -199,59 +173,51 @@ struct FileEditorView: View {
 
 struct OutlineItemRow: View {
     @Binding var item: ListItem
+    let isActive: Bool
+    let onFocus: () -> Void
     let onEnter: () -> Void
     let onIndent: () -> Void
     let onUnindent: () -> Void
-    let onDeleteEmpty: () -> Void
     let onCheck: () -> Void
     let onChange: () -> Void
-    @Binding var isFocused: Bool
 
-    // Track cursor position via a local string to detect "at start"
+    @FocusState private var focused: Bool
     @State private var text: String = ""
 
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
-            // Indent spacer
             if item.depth > 0 {
                 Spacer().frame(width: CGFloat(item.depth) * 20)
             }
 
-            // Bullet dot
-            Text("·")
+            Text("\u{00B7}")
                 .font(.system(size: 18, design: .monospaced))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
                 .frame(width: 20, alignment: .center)
                 .onTapGesture { onCheck() }
 
-            // Text field
             TextField("", text: $text, axis: .vertical)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
                 .strikethrough(item.checked, color: Color(.tertiaryLabel))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
-                .focused(Binding(
-                    get: { isFocused },
-                    set: { isFocused = $0 }
-                ))
+                .focused($focused)
+                .onSubmit { onEnter() }
                 .onChange(of: text) { _, newValue in
                     item.text = newValue
                     onChange()
                 }
-                .onSubmit { onEnter() }
+                .onChange(of: focused) { _, isFocused in
+                    if isFocused { onFocus() }
+                }
                 .toolbar {
                     ToolbarItemGroup(placement: .keyboard) {
-                        // Only show when this row is focused
-                        if isFocused {
-                            Button {
-                                onUnindent()
-                            } label: {
+                        if focused {
+                            Button { onUnindent() } label: {
                                 Image(systemName: "arrow.left.to.line")
                             }
-                            Button {
-                                onIndent()
-                            } label: {
+                            Button { onIndent() } label: {
                                 Image(systemName: "arrow.right.to.line")
                             }
                             Spacer()
@@ -264,50 +230,19 @@ struct OutlineItemRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .contentShape(Rectangle())
-        .onAppear { text = item.text }
+        .onAppear {
+            text = item.text
+            if isActive {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+            }
+        }
+        .onChange(of: isActive) { _, active in
+            if active && !focused {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+            }
+        }
         .onChange(of: item.text) { _, newValue in
             if text != newValue { text = newValue }
         }
-        // Backspace at empty → unindent or delete
-        .background(
-            KeyboardResponder(text: $text, onBackspaceAtStart: {
-                if item.depth > 0 {
-                    onUnindent()
-                } else if text.isEmpty {
-                    onDeleteEmpty()
-                }
-            })
-        )
-    }
-}
-
-// MARK: - UIKit keyboard hook for backspace detection
-
-struct KeyboardResponder: UIViewRepresentable {
-    @Binding var text: String
-    let onBackspaceAtStart: () -> Void
-
-    func makeUIView(context: Context) -> BackspaceTextField {
-        let field = BackspaceTextField()
-        field.delegate = context.coordinator
-        field.onBackspaceAtStart = onBackspaceAtStart
-        field.isHidden = true
-        return field
-    }
-
-    func updateUIView(_ uiView: BackspaceTextField, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    class Coordinator: NSObject, UITextFieldDelegate {}
-}
-
-class BackspaceTextField: UITextField {
-    var onBackspaceAtStart: (() -> Void)?
-
-    override func deleteBackward() {
-        if text?.isEmpty == true || selectedTextRange?.isEmpty == true && offset(from: beginningOfDocument, to: selectedTextRange!.start) == 0 {
-            onBackspaceAtStart?()
-        }
-        super.deleteBackward()
     }
 }
