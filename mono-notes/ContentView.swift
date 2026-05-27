@@ -1,7 +1,1 @@
-import SwiftUI
-
-struct ContentView: View {
-    var body: some View {
-        NoteListView()
-    }
-}
+// No longer used. Entry point is RootView via MonoNotesApp.swift

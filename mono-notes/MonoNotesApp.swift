@@ -2,11 +2,11 @@ import SwiftUI
 
 @main
 struct MonoNotesApp: App {
-    @StateObject private var store = NoteStore()
+    @StateObject private var store = AppStore()
 
     var body: some Scene {
         WindowGroup {
-            NoteListView()
+            RootView()
                 .environmentObject(store)
         }
     }
