@@ -22,6 +22,11 @@ final class AppStore: ObservableObject {
         tab == .notes ? data.noteRoots : data.listRoots
     }
 
+    func setRoots(_ roots: [FolderChild], for tab: AppTab) {
+        if tab == .notes { data.noteRoots = roots } else { data.listRoots = roots }
+        save()
+    }
+
     // MARK: - Create
 
     @discardableResult
@@ -31,11 +36,7 @@ final class AppStore: ObservableObject {
         if let fid = folderID {
             insertChild(child, intoFolderID: fid, tab: tab)
         } else {
-            if tab == .notes {
-                data.noteRoots.append(child)
-            } else {
-                data.listRoots.append(child)
-            }
+            appendToRoots(child, tab: tab)
         }
         data.lastOpenedID = file.id
         data.lastOpenedTab = tab.rawValue
@@ -50,43 +51,47 @@ final class AppStore: ObservableObject {
         if let pid = parentID {
             insertChild(child, intoFolderID: pid, tab: tab)
         } else {
-            if tab == .notes {
-                data.noteRoots.insert(child, at: 0)
-            } else {
-                data.listRoots.insert(child, at: 0)
-            }
+            prependFolderToRoots(child, tab: tab)
         }
         save()
         return folder
     }
 
-    // MARK: - Update file
+    // MARK: - Update
 
     func updateFile(_ file: FileItem, tab: AppTab) {
-        updateFileInRoots(&(tab == .notes ? data.noteRoots : data.listRoots), file: file)
-        save()
+        updateFileInRoots(&roots(for: tab, mutable: true), file: file, tab: tab)
     }
 
     // MARK: - Delete
 
     func delete(id: UUID, tab: AppTab) {
-        deleteFromRoots(&(tab == .notes ? data.noteRoots : data.listRoots), id: id)
+        var r = roots(for: tab)
+        deleteFromRoots(&r, id: id)
+        setRoots(r, for: tab)
         if data.lastOpenedID == id { data.lastOpenedID = nil }
-        save()
     }
 
     // MARK: - Rename folder
 
     func renameFolder(id: UUID, name: String, tab: AppTab) {
-        renameFolderInRoots(&(tab == .notes ? data.noteRoots : data.listRoots), id: id, name: name)
-        save()
+        var r = roots(for: tab)
+        renameFolderInRoots(&r, id: id, name: name)
+        setRoots(r, for: tab)
     }
 
     // MARK: - Toggle folder expand
 
     func toggleFolder(id: UUID, tab: AppTab) {
-        toggleFolderInRoots(&(tab == .notes ? data.noteRoots : data.listRoots), id: id)
-        save()
+        var r = roots(for: tab)
+        toggleFolderInRoots(&r, id: id)
+        setRoots(r, for: tab)
+    }
+
+    func expandFolder(id: UUID, tab: AppTab) {
+        var r = roots(for: tab)
+        setFolderExpanded(&r, id: id, expanded: true)
+        setRoots(r, for: tab)
     }
 
     // MARK: - Set last opened
@@ -97,7 +102,7 @@ final class AppStore: ObservableObject {
         save()
     }
 
-    // MARK: - Find file
+    // MARK: - Find
 
     func findFile(id: UUID) -> FileItem? {
         findFileInRoots(data.noteRoots, id: id) ?? findFileInRoots(data.listRoots, id: id)
@@ -108,14 +113,32 @@ final class AppStore: ObservableObject {
             if let f = findFileInRoots(data.noteRoots, id: lid) { return (f, .notes) }
             if let f = findFileInRoots(data.listRoots, id: lid) { return (f, .lists) }
         }
-        // fallback: last created in either tab
-        let allFiles = allFiles(in: data.noteRoots).map { ($0, AppTab.notes) }
-                     + allFiles(in: data.listRoots).map { ($0, AppTab.lists) }
-        return allFiles.sorted { $0.0.createdAt > $1.0.createdAt }.first
+        let all = allFiles(in: data.noteRoots).map { ($0, AppTab.notes) }
+                + allFiles(in: data.listRoots).map { ($0, AppTab.lists) }
+        return all.sorted { $0.0.createdAt > $1.0.createdAt }.first
     }
 
     func hasAnyContent() -> Bool {
         !data.noteRoots.isEmpty || !data.listRoots.isEmpty
+    }
+
+    // MARK: - Drag & drop: move item to new parent / position
+
+    /// Move `draggedID` into `targetFolderID` (nil = root), placing it after `afterID` (nil = top).
+    func move(id draggedID: UUID, toFolder targetFolderID: UUID?, afterID: UUID?, tab: AppTab) {
+        var roots = self.roots(for: tab)
+
+        // 1. Extract the dragged child
+        guard let dragged = extract(id: draggedID, from: &roots) else { return }
+
+        // 2. Insert at destination
+        if let folderID = targetFolderID {
+            insertChildInRoots(&roots, child: dragged, folderID: folderID, afterID: afterID)
+        } else {
+            insertAtRoot(&roots, child: dragged, afterID: afterID)
+        }
+
+        setRoots(roots, for: tab)
     }
 
     // MARK: - Persistence
@@ -134,24 +157,72 @@ final class AppStore: ObservableObject {
         data = decoded
     }
 
-    // MARK: - Recursive helpers
+    // MARK: - Private mutable roots helper
 
-    private func insertChild(_ child: FolderChild, intoFolderID id: UUID, tab: AppTab) {
-        insertChildInRoots(&(tab == .notes ? data.noteRoots : data.listRoots), child: child, folderID: id)
+    private func roots(for tab: AppTab, mutable: Bool) -> [FolderChild] {
+        tab == .notes ? data.noteRoots : data.listRoots
     }
 
-    private func insertChildInRoots(_ roots: inout [FolderChild], child: FolderChild, folderID: UUID) {
+    private func appendToRoots(_ child: FolderChild, tab: AppTab) {
+        if tab == .notes { data.noteRoots.append(child) }
+        else { data.listRoots.append(child) }
+    }
+
+    private func prependFolderToRoots(_ child: FolderChild, tab: AppTab) {
+        if tab == .notes { data.noteRoots.insert(child, at: 0) }
+        else { data.listRoots.insert(child, at: 0) }
+    }
+
+    // MARK: - Recursive tree operations
+
+    private func insertChild(_ child: FolderChild, intoFolderID id: UUID, tab: AppTab) {
+        var r = roots(for: tab)
+        insertChildInRoots(&r, child: child, folderID: id, afterID: nil)
+        setRoots(r, for: tab)
+    }
+
+    private func insertChildInRoots(_ roots: inout [FolderChild], child: FolderChild, folderID: UUID, afterID: UUID?) {
         for i in roots.indices {
             if case .folder(var f) = roots[i], f.id == folderID {
-                f.children.append(child)
+                if let aid = afterID, let idx = f.children.firstIndex(where: { $0.id == aid }) {
+                    f.children.insert(child, at: idx + 1)
+                } else {
+                    f.children.append(child)
+                }
                 roots[i] = .folder(f)
                 return
             }
             if case .folder(var f) = roots[i] {
-                insertChildInRoots(&f.children, child: child, folderID: folderID)
+                insertChildInRoots(&f.children, child: child, folderID: folderID, afterID: afterID)
                 roots[i] = .folder(f)
             }
         }
+    }
+
+    private func insertAtRoot(_ roots: inout [FolderChild], child: FolderChild, afterID: UUID?) {
+        if let aid = afterID, let idx = roots.firstIndex(where: { $0.id == aid }) {
+            roots.insert(child, at: idx + 1)
+        } else {
+            roots.insert(child, at: 0)
+        }
+    }
+
+    @discardableResult
+    private func extract(id: UUID, from roots: inout [FolderChild]) -> FolderChild? {
+        for i in roots.indices {
+            if roots[i].id == id {
+                let child = roots[i]
+                roots.remove(at: i)
+                return child
+            }
+            if case .folder(var f) = roots[i] {
+                if let found = extract(id: id, from: &f.children) {
+                    roots[i] = .folder(f)
+                    return found
+                }
+            }
+        }
+        return nil
     }
 
     private func deleteFromRoots(_ roots: inout [FolderChild], id: UUID) {
@@ -164,14 +235,17 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func updateFileInRoots(_ roots: inout [FolderChild], file: FileItem) {
+    private func updateFileInRoots(_ roots: inout [FolderChild], file: FileItem, tab: AppTab) {
         for i in roots.indices {
             if case .file(let fi) = roots[i], fi.id == file.id {
                 roots[i] = .file(file)
+                if tab == .notes { data.noteRoots = roots }
+                else { data.listRoots = roots }
+                save()
                 return
             }
             if case .folder(var f) = roots[i] {
-                updateFileInRoots(&f.children, file: file)
+                updateFileInRoots(&f.children, file: file, tab: tab)
                 roots[i] = .folder(f)
             }
         }
@@ -180,9 +254,7 @@ final class AppStore: ObservableObject {
     private func renameFolderInRoots(_ roots: inout [FolderChild], id: UUID, name: String) {
         for i in roots.indices {
             if case .folder(var f) = roots[i], f.id == id {
-                f.name = name
-                roots[i] = .folder(f)
-                return
+                f.name = name; roots[i] = .folder(f); return
             }
             if case .folder(var f) = roots[i] {
                 renameFolderInRoots(&f.children, id: id, name: name)
@@ -194,12 +266,22 @@ final class AppStore: ObservableObject {
     private func toggleFolderInRoots(_ roots: inout [FolderChild], id: UUID) {
         for i in roots.indices {
             if case .folder(var f) = roots[i], f.id == id {
-                f.isExpanded.toggle()
-                roots[i] = .folder(f)
-                return
+                f.isExpanded.toggle(); roots[i] = .folder(f); return
             }
             if case .folder(var f) = roots[i] {
                 toggleFolderInRoots(&f.children, id: id)
+                roots[i] = .folder(f)
+            }
+        }
+    }
+
+    private func setFolderExpanded(_ roots: inout [FolderChild], id: UUID, expanded: Bool) {
+        for i in roots.indices {
+            if case .folder(var f) = roots[i], f.id == id {
+                f.isExpanded = expanded; roots[i] = .folder(f); return
+            }
+            if case .folder(var f) = roots[i] {
+                setFolderExpanded(&f.children, id: id, expanded: expanded)
                 roots[i] = .folder(f)
             }
         }

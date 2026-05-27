@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SidebarView: View {
     @EnvironmentObject var store: AppStore
@@ -9,13 +10,10 @@ struct SidebarView: View {
     @State private var activeTab: AppTab = .notes
     @State private var showNewFolderAlert = false
     @State private var newFolderName = ""
-    @State private var renamingFolderID: UUID? = nil
-    @State private var renameName = ""
-    @State private var folderToDelete: Folder? = nil
+    @State private var draggingID: UUID? = nil
 
     var body: some View {
         VStack(spacing: 0) {
-            // Tab switcher
             tabBar
                 .padding(.top, 60)
                 .padding(.horizontal, 16)
@@ -23,10 +21,12 @@ struct SidebarView: View {
 
             Divider()
 
-            // List
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(store.roots(for: activeTab)) { child in
+                    // Root-level drop zone (top)
+                    RootDropZone(tab: activeTab, afterID: nil, draggingID: $draggingID)
+
+                    ForEach(Array(store.roots(for: activeTab).enumerated()), id: \.element.id) { idx, child in
                         SidebarChildView(
                             child: child,
                             tab: activeTab,
@@ -34,18 +34,18 @@ struct SidebarView: View {
                             selectedFile: $selectedFile,
                             selectedTab: $selectedTab,
                             sidebarOpen: $sidebarOpen,
-                            renamingFolderID: $renamingFolderID,
-                            renameName: $renameName
+                            draggingID: $draggingID
                         )
+
+                        // Drop zone after each root item
+                        RootDropZone(tab: activeTab, afterID: child.id, draggingID: $draggingID)
                     }
                 }
-                .padding(.top, 8)
+                .padding(.top, 4)
                 .padding(.bottom, 120)
             }
 
             Spacer(minLength: 0)
-
-            // Bottom create buttons
             bottomBar
                 .padding(.horizontal, 16)
                 .padding(.bottom, 40)
@@ -55,34 +55,26 @@ struct SidebarView: View {
         .alert("New Folder", isPresented: $showNewFolderAlert) {
             TextField("Folder name", text: $newFolderName)
             Button("Create") {
-                if !newFolderName.isEmpty {
-                    store.createFolder(name: newFolderName, in: activeTab)
-                    newFolderName = ""
-                }
+                guard !newFolderName.isEmpty else { return }
+                store.createFolder(name: newFolderName, in: activeTab)
+                newFolderName = ""
             }
             Button("Cancel", role: .cancel) { newFolderName = "" }
         }
     }
 
     // MARK: - Tab bar
-
     private var tabBar: some View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.self) { tab in
-                Button {
-                    withAnimation { activeTab = tab }
-                } label: {
+                Button { withAnimation { activeTab = tab } } label: {
                     Text(tab.rawValue)
                         .font(.system(.footnote, design: .monospaced))
                         .fontWeight(activeTab == tab ? .semibold : .regular)
                         .foregroundStyle(activeTab == tab ? .primary : .secondary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
-                        .background(
-                            activeTab == tab
-                                ? Color(.systemFill)
-                                : Color.clear
-                        )
+                        .background(activeTab == tab ? Color(.systemFill) : .clear)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
             }
@@ -90,7 +82,6 @@ struct SidebarView: View {
     }
 
     // MARK: - Bottom bar
-
     private var bottomBar: some View {
         HStack {
             Button {
@@ -99,21 +90,43 @@ struct SidebarView: View {
                 selectedTab = activeTab
                 withAnimation { sidebarOpen = false }
             } label: {
-                Label(activeTab == .notes ? "New note" : "New list",
-                      systemImage: "square.and.pencil")
+                Label(activeTab == .notes ? "New note" : "New list", systemImage: "square.and.pencil")
                     .font(.system(.footnote, design: .monospaced))
             }
-
             Spacer()
-
-            Button {
-                showNewFolderAlert = true
-            } label: {
+            Button { showNewFolderAlert = true } label: {
                 Label("New folder", systemImage: "folder.badge.plus")
                     .font(.system(.footnote, design: .monospaced))
             }
         }
         .foregroundStyle(.primary)
+    }
+}
+
+// MARK: - Root-level drop zone
+
+struct RootDropZone: View {
+    @EnvironmentObject var store: AppStore
+    let tab: AppTab
+    let afterID: UUID?
+    @Binding var draggingID: UUID?
+    @State private var isTargeted = false
+
+    var body: some View {
+        Rectangle()
+            .fill(isTargeted ? Color.accentColor.opacity(0.25) : Color.clear)
+            .frame(height: isTargeted ? 4 : 2)
+            .padding(.horizontal, 12)
+            .animation(.easeInOut(duration: 0.15), value: isTargeted)
+            .dropDestination(for: DragPayload.self) { items, _ in
+                guard let payload = items.first,
+                      payload.id != draggingID || true else { return false }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    store.move(id: payload.id, toFolder: nil, afterID: afterID, tab: tab)
+                }
+                draggingID = nil
+                return true
+            } isTargeted: { isTargeted = $0 }
     }
 }
 
@@ -127,24 +140,22 @@ struct SidebarChildView: View {
     @Binding var selectedFile: FileItem?
     @Binding var selectedTab: AppTab
     @Binding var sidebarOpen: Bool
-    @Binding var renamingFolderID: UUID?
-    @Binding var renameName: String
+    @Binding var draggingID: UUID?
 
     @State private var showDeleteFolderAlert = false
     @State private var showRenameAlert = false
     @State private var localRename = ""
+    @State private var autoExpandTimer: Timer? = nil
+    @State private var isFolderDropTarget = false
 
     var body: some View {
         switch child {
-        case .folder(let folder):
-            folderRow(folder)
-        case .file(let file):
-            fileRow(file)
+        case .folder(let folder): folderRow(folder)
+        case .file(let file): fileRow(file)
         }
     }
 
     // MARK: - Folder row
-
     @ViewBuilder
     private func folderRow(_ folder: Folder) -> some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -153,42 +164,64 @@ struct SidebarChildView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                     .frame(width: 12)
-
                 Image(systemName: "folder")
                     .font(.system(.footnote))
-                    .foregroundStyle(.secondary)
-
+                    .foregroundStyle(isFolderDropTarget ? .accentColor : .secondary)
                 Text(folder.name)
                     .font(.system(.footnote, design: .monospaced))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-
                 Spacer()
             }
             .padding(.leading, CGFloat(depth) * 16 + 12)
             .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isFolderDropTarget ? Color.accentColor.opacity(0.12) : .clear)
+                    .padding(.horizontal, 4)
+            )
             .contentShape(Rectangle())
-            .onTapGesture {
-                store.toggleFolder(id: folder.id, tab: tab)
-            }
-            .onLongPressGesture {
-                localRename = folder.name
-                showRenameAlert = true
+            .onTapGesture { store.toggleFolder(id: folder.id, tab: tab) }
+            .onLongPressGesture { localRename = folder.name; showRenameAlert = true }
+            // Make folder a drop destination (drop INTO folder)
+            .dropDestination(for: DragPayload.self) { items, _ in
+                guard let payload = items.first else { return false }
+                autoExpandTimer?.invalidate()
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    store.move(id: payload.id, toFolder: folder.id, afterID: nil, tab: tab)
+                    store.expandFolder(id: folder.id, tab: tab)
+                }
+                draggingID = nil
+                isFolderDropTarget = false
+                return true
+            } isTargeted: { targeted in
+                withAnimation(.easeInOut(duration: 0.15)) { isFolderDropTarget = targeted }
+                if targeted {
+                    // Auto-expand after 0.8s hold
+                    autoExpandTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { _ in
+                        store.expandFolder(id: folder.id, tab: tab)
+                    }
+                } else {
+                    autoExpandTimer?.invalidate()
+                }
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) {
-                    if folder.children.isEmpty {
-                        store.delete(id: folder.id, tab: tab)
-                    } else {
-                        showDeleteFolderAlert = true
-                    }
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
+                    if folder.children.isEmpty { store.delete(id: folder.id, tab: tab) }
+                    else { showDeleteFolderAlert = true }
+                } label: { Label("Delete", systemImage: "trash") }
+            }
+            // Make folder draggable
+            .draggable(DragPayload(id: folder.id, isFolder: true)) {
+                dragPreview(label: folder.name, icon: "folder")
+                    .onAppear { draggingID = folder.id }
             }
 
-            // Children
+            // Children + inner drop zones
             if folder.isExpanded {
+                // Drop zone at top of folder children
+                FolderDropZone(tab: tab, folderID: folder.id, afterID: nil, draggingID: $draggingID)
+
                 ForEach(folder.children) { child in
                     SidebarChildView(
                         child: child,
@@ -197,33 +230,24 @@ struct SidebarChildView: View {
                         selectedFile: $selectedFile,
                         selectedTab: $selectedTab,
                         sidebarOpen: $sidebarOpen,
-                        renamingFolderID: $renamingFolderID,
-                        renameName: $renameName
+                        draggingID: $draggingID
                     )
+                    FolderDropZone(tab: tab, folderID: folder.id, afterID: child.id, draggingID: $draggingID)
                 }
             }
         }
         .alert("Rename Folder", isPresented: $showRenameAlert) {
             TextField("Folder name", text: $localRename)
-            Button("Save") {
-                if !localRename.isEmpty {
-                    store.renameFolder(id: folder.id, name: localRename, tab: tab)
-                }
-            }
+            Button("Save") { if !localRename.isEmpty { store.renameFolder(id: folder.id, name: localRename, tab: tab) } }
             Button("Cancel", role: .cancel) {}
         }
         .alert("Delete \"\(folder.name)\"?", isPresented: $showDeleteFolderAlert) {
-            Button("Delete", role: .destructive) {
-                store.delete(id: folder.id, tab: tab)
-            }
+            Button("Delete", role: .destructive) { store.delete(id: folder.id, tab: tab) }
             Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will delete everything inside.")
-        }
+        } message: { Text("This will delete everything inside.") }
     }
 
     // MARK: - File row
-
     @ViewBuilder
     private func fileRow(_ file: FileItem) -> some View {
         HStack(spacing: 6) {
@@ -231,25 +255,18 @@ struct SidebarChildView: View {
                 .font(.system(.footnote))
                 .foregroundStyle(.secondary)
                 .frame(width: 12)
-
             Text(file.displayTitle)
                 .font(.system(.footnote, design: .monospaced))
                 .foregroundStyle(selectedFile?.id == file.id ? .primary : .secondary)
                 .lineLimit(1)
-
             Spacer()
-
             Text(file.dateLabel)
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.quaternary)
         }
         .padding(.leading, CGFloat(depth) * 16 + 12)
         .padding(.vertical, 9)
-        .background(
-            selectedFile?.id == file.id
-                ? Color(.systemFill)
-                : Color.clear
-        )
+        .background(selectedFile?.id == file.id ? Color(.systemFill) : .clear)
         .contentShape(Rectangle())
         .onTapGesture {
             selectedFile = file
@@ -261,9 +278,56 @@ struct SidebarChildView: View {
             Button(role: .destructive) {
                 store.delete(id: file.id, tab: tab)
                 if selectedFile?.id == file.id { selectedFile = nil }
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
+            } label: { Label("Delete", systemImage: "trash") }
         }
+        .draggable(DragPayload(id: file.id, isFolder: false)) {
+            dragPreview(label: file.displayTitle, icon: file.kind == .note ? "doc.text" : "list.bullet")
+                .onAppear { draggingID = file.id }
+        }
+        .opacity(draggingID == file.id ? 0.4 : 1.0)
+        .animation(.easeInOut(duration: 0.15), value: draggingID)
+    }
+
+    // MARK: - Drag preview
+    private func dragPreview(label: String, icon: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(.footnote))
+            Text(label)
+                .font(.system(.footnote, design: .monospaced))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .shadow(radius: 4)
+    }
+}
+
+// MARK: - Drop zone inside a folder (between children)
+
+struct FolderDropZone: View {
+    @EnvironmentObject var store: AppStore
+    let tab: AppTab
+    let folderID: UUID
+    let afterID: UUID?
+    @Binding var draggingID: UUID?
+    @State private var isTargeted = false
+
+    var body: some View {
+        Rectangle()
+            .fill(isTargeted ? Color.accentColor.opacity(0.3) : Color.clear)
+            .frame(height: isTargeted ? 4 : 2)
+            .padding(.horizontal, 12)
+            .animation(.easeInOut(duration: 0.15), value: isTargeted)
+            .dropDestination(for: DragPayload.self) { items, _ in
+                guard let payload = items.first else { return false }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    store.move(id: payload.id, toFolder: folderID, afterID: afterID, tab: tab)
+                }
+                draggingID = nil
+                return true
+            } isTargeted: { isTargeted = $0 }
     }
 }
