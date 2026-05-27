@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - FileEditorView
 
@@ -181,68 +182,177 @@ struct OutlineItemRow: View {
     let onCheck: () -> Void
     let onChange: () -> Void
 
-    @FocusState private var focused: Bool
-    @State private var text: String = ""
-
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
             if item.depth > 0 {
                 Spacer().frame(width: CGFloat(item.depth) * 20)
             }
 
-            Text("\u{00B7}")
-                .font(.system(size: 18, design: .monospaced))
+            // Bullet — bolder middle dot
+            Text("\u{2022}")
+                .font(.system(size: 16, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
-                .frame(width: 20, alignment: .center)
+                .frame(width: 24, alignment: .center)
                 .onTapGesture { onCheck() }
 
-            TextField("", text: $text, axis: .vertical)
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(item.checked ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
-                .strikethrough(item.checked, color: Color(.tertiaryLabel))
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .focused($focused)
-                .onSubmit { onEnter() }
-                .onChange(of: text) { _, newValue in
-                    item.text = newValue
-                    onChange()
-                }
-                .onChange(of: focused) { _, isFocused in
-                    if isFocused { onFocus() }
-                }
-                .toolbar {
-                    ToolbarItemGroup(placement: .keyboard) {
-                        if focused {
-                            Button { onUnindent() } label: {
-                                Image(systemName: "arrow.left.to.line")
-                            }
-                            Button { onIndent() } label: {
-                                Image(systemName: "arrow.right.to.line")
-                            }
-                            Spacer()
-                        }
-                    }
-                }
+            // UIKit-backed text field to intercept backspace
+            OutlineTextField(
+                text: $item.text,
+                isActive: isActive,
+                isChecked: item.checked,
+                onFocus: onFocus,
+                onEnter: onEnter,
+                onIndent: onIndent,
+                onUnindent: onUnindent,
+                onChange: onChange
+            )
+            .frame(minHeight: 36)
 
             Spacer()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .onAppear {
-            text = item.text
-            if isActive {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+    }
+}
+
+// MARK: - OutlineTextField (UIViewRepresentable)
+
+struct OutlineTextField: UIViewRepresentable {
+    @Binding var text: String
+    let isActive: Bool
+    let isChecked: Bool
+    let onFocus: () -> Void
+    let onEnter: () -> Void
+    let onIndent: () -> Void
+    let onUnindent: () -> Void
+    let onChange: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> BackspaceAwareTextField {
+        let field = BackspaceAwareTextField()
+        field.font = UIFont.monospacedSystemFont(ofSize: 17, weight: .regular)
+        field.autocorrectionType = .no
+        field.autocapitalizationType = .none
+        field.spellCheckingType = .no
+        field.returnKeyType = .next
+        field.delegate = context.coordinator
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        field.onBackspaceAtStart = {
+            context.coordinator.parent.onUnindent()
+        }
+
+        // Keyboard toolbar
+        let toolbar = UIToolbar()
+        toolbar.sizeToFit()
+        let unindentBtn = UIBarButtonItem(
+            image: UIImage(systemName: "arrow.left.to.line"),
+            style: .plain,
+            target: context.coordinator,
+            action: #selector(Coordinator.tappedUnindent)
+        )
+        let indentBtn = UIBarButtonItem(
+            image: UIImage(systemName: "arrow.right.to.line"),
+            style: .plain,
+            target: context.coordinator,
+            action: #selector(Coordinator.tappedIndent)
+        )
+        let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
+        toolbar.items = [unindentBtn, indentBtn, flex]
+        field.inputAccessoryView = toolbar
+
+        return field
+    }
+
+    func updateUIView(_ field: BackspaceAwareTextField, context: Context) {
+        context.coordinator.parent = self
+        field.onBackspaceAtStart = { context.coordinator.parent.onUnindent() }
+
+        if field.text != text {
+            field.text = text
+        }
+
+        // Strike-through for checked items
+        if isChecked {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                .foregroundColor: UIColor.tertiaryLabel,
+                .font: UIFont.monospacedSystemFont(ofSize: 17, weight: .regular)
+            ]
+            field.defaultTextAttributes = attrs
+        } else {
+            field.defaultTextAttributes = [
+                .foregroundColor: UIColor.label,
+                .font: UIFont.monospacedSystemFont(ofSize: 17, weight: .regular)
+            ]
+        }
+
+        // Focus management
+        if isActive && !field.isFirstResponder {
+            DispatchQueue.main.async { field.becomeFirstResponder() }
+        } else if !isActive && field.isFirstResponder {
+            field.resignFirstResponder()
+        }
+    }
+
+    // MARK: Coordinator
+
+    class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: OutlineTextField
+
+        init(parent: OutlineTextField) {
+            self.parent = parent
+        }
+
+        func textField(_ textField: UITextField,
+                       shouldChangeCharactersIn range: NSRange,
+                       replacementString string: String) -> Bool {
+            let current = textField.text ?? ""
+            if let r = Range(range, in: current) {
+                let updated = current.replacingCharacters(in: r, with: string)
+                parent.text = updated
+                parent.onChange()
             }
+            return true
         }
-        .onChange(of: isActive) { _, active in
-            if active && !focused {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
-            }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            parent.onEnter()
+            return false
         }
-        .onChange(of: item.text) { _, newValue in
-            if text != newValue { text = newValue }
+
+        func textFieldDidBeginEditing(_ textField: UITextField) {
+            parent.onFocus()
         }
+
+        @objc func tappedIndent() { parent.onIndent() }
+        @objc func tappedUnindent() { parent.onUnindent() }
+    }
+}
+
+// MARK: - UITextField subclass with backspace detection
+
+class BackspaceAwareTextField: UITextField {
+    var onBackspaceAtStart: (() -> Void)?
+
+    override func deleteBackward() {
+        // Fire BEFORE super so text is still empty/cursor at 0
+        let cursorAtStart: Bool = {
+            guard let range = selectedTextRange else { return false }
+            return range.isEmpty && offset(from: beginningOfDocument, to: range.start) == 0
+        }()
+        let isEmpty = (text ?? "").isEmpty
+
+        if cursorAtStart || isEmpty {
+            onBackspaceAtStart?()
+            // If text was empty, don't call super (nothing to delete)
+            if isEmpty { return }
+        }
+        super.deleteBackward()
     }
 }
