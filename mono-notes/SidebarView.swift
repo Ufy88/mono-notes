@@ -30,7 +30,6 @@ struct SidebarView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if searchQuery.isEmpty {
-                        // Normal tree view
                         RootDropZone(tab: activeTab, afterID: nil, draggingID: $draggingID)
                         ForEach(Array(store.roots(for: activeTab).enumerated()), id: \.element.id) { _, child in
                             SidebarChildView(
@@ -41,7 +40,6 @@ struct SidebarView: View {
                             RootDropZone(tab: activeTab, afterID: child.id, draggingID: $draggingID)
                         }
                     } else {
-                        // Flat search results
                         let results = store.search(query: searchQuery, in: activeTab)
                         if results.isEmpty {
                             Text("no results")
@@ -176,7 +174,6 @@ struct SearchResultRow: View {
 
     @ViewBuilder
     private var highlightedPreview: some View {
-        // Find first matching snippet
         let text = file.kind == .note ? file.body : file.listItems.map(\.text).joined(separator: " ")
         let lower = text.lowercased()
         let q = query.lowercased()
@@ -252,7 +249,7 @@ struct SidebarChildView: View {
                     .frame(width: 12)
                 Image(systemName: "folder")
                     .font(.system(.footnote))
-                    .foregroundStyle(isFolderDropTarget ? .accentColor : .secondary)
+                    .foregroundStyle(isFolderDropTarget ? Color.accentColor : Color.secondary)
                 Text(folder.name)
                     .font(.system(.footnote, design: .monospaced))
                     .foregroundStyle(.primary)
@@ -263,7 +260,7 @@ struct SidebarChildView: View {
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(isFolderDropTarget ? Color.accentColor.opacity(0.12) : .clear)
+                    .fill(isFolderDropTarget ? Color.accentColor.opacity(0.12) : Color.clear)
                     .padding(.horizontal, 4)
             )
             .contentShape(Rectangle())
