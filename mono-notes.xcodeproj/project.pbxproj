@@ -8,21 +8,27 @@
 
 /* Begin PBXBuildFile section */
 		AA000001 /* MonoNotesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000011 /* MonoNotesApp.swift */; };
-		AA000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000012 /* ContentView.swift */; };
-		AA000003 /* Note.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000013 /* Note.swift */; };
-		AA000004 /* NoteStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000014 /* NoteStore.swift */; };
-		AA000005 /* NoteListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000015 /* NoteListView.swift */; };
-		AA000006 /* NoteEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000016 /* NoteEditorView.swift */; };
+		AA000007 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000017 /* Models.swift */; };
+		AA000008 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000018 /* AppStore.swift */; };
+		AA000009 /* DragDropTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000019 /* DragDropTypes.swift */; };
+		AA00000A /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001A /* RootView.swift */; };
+		AA00000B /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001B /* SidebarView.swift */; };
+		AA00000C /* FileEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001C /* FileEditorView.swift */; };
+		AA00000D /* EmptyScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001D /* EmptyScreenView.swift */; };
+		AA00000E /* PlaceholderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001E /* PlaceholderView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		AA000010 /* mono-notes.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "mono-notes.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA000011 /* MonoNotesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MonoNotesApp.swift; sourceTree = "<group>"; };
-		AA000012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		AA000013 /* Note.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Note.swift; sourceTree = "<group>"; };
-		AA000014 /* NoteStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteStore.swift; sourceTree = "<group>"; };
-		AA000015 /* NoteListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteListView.swift; sourceTree = "<group>"; };
-		AA000016 /* NoteEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorView.swift; sourceTree = "<group>"; };
+		AA000017 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		AA000018 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		AA000019 /* DragDropTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DragDropTypes.swift; sourceTree = "<group>"; };
+		AA00001A /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		AA00001B /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		AA00001C /* FileEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileEditorView.swift; sourceTree = "<group>"; };
+		AA00001D /* EmptyScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyScreenView.swift; sourceTree = "<group>"; };
+		AA00001E /* PlaceholderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceholderView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -48,11 +54,14 @@
 			isa = PBXGroup;
 			children = (
 				AA000011 /* MonoNotesApp.swift */,
-				AA000012 /* ContentView.swift */,
-				AA000013 /* Note.swift */,
-				AA000014 /* NoteStore.swift */,
-				AA000015 /* NoteListView.swift */,
-				AA000016 /* NoteEditorView.swift */,
+				AA000017 /* Models.swift */,
+				AA000018 /* AppStore.swift */,
+				AA000019 /* DragDropTypes.swift */,
+				AA00001A /* RootView.swift */,
+				AA00001B /* SidebarView.swift */,
+				AA00001C /* FileEditorView.swift */,
+				AA00001D /* EmptyScreenView.swift */,
+				AA00001E /* PlaceholderView.swift */,
 			);
 			path = "mono-notes";
 			sourceTree = "<group>";
@@ -123,11 +132,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA000001 /* MonoNotesApp.swift in Sources */,
-				AA000002 /* ContentView.swift in Sources */,
-				AA000003 /* Note.swift in Sources */,
-				AA000004 /* NoteStore.swift in Sources */,
-				AA000005 /* NoteListView.swift in Sources */,
-				AA000006 /* NoteEditorView.swift in Sources */,
+				AA000007 /* Models.swift in Sources */,
+				AA000008 /* AppStore.swift in Sources */,
+				AA000009 /* DragDropTypes.swift in Sources */,
+				AA00000A /* RootView.swift in Sources */,
+				AA00000B /* SidebarView.swift in Sources */,
+				AA00000C /* FileEditorView.swift in Sources */,
+				AA00000D /* EmptyScreenView.swift in Sources */,
+				AA00000E /* PlaceholderView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
