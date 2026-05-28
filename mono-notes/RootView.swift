@@ -14,18 +14,32 @@ struct RootView: View {
             if sidebarOpen {
                 Color.black.opacity(0.25)
                     .ignoresSafeArea()
-                    .onTapGesture { withAnimation(.easeInOut(duration: 0.22)) { sidebarOpen = false } }
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.22)) { sidebarOpen = false }
+                    }
                     .transition(.opacity)
             }
 
             if sidebarOpen {
-                SidebarView(selectedFile: $selectedFile, selectedTab: $selectedTab, sidebarOpen: $sidebarOpen)
-                    .frame(width: UIScreen.main.bounds.width * 0.8)
-                    .shadow(color: .black.opacity(0.12), radius: 16, x: 4, y: 0)
-                    .transition(.move(edge: .leading))
+                SidebarView(
+                    selectedFile: $selectedFile,
+                    selectedTab: $selectedTab,
+                    sidebarOpen: $sidebarOpen
+                )
+                .frame(width: UIScreen.main.bounds.width * 0.8)
+                .shadow(color: .black.opacity(0.12), radius: 16, x: 4, y: 0)
+                .transition(.move(edge: .leading))
             }
         }
         .animation(.easeInOut(duration: 0.22), value: sidebarOpen)
+        .onChange(of: sidebarOpen) { _, open in
+            if open {
+                UIApplication.shared.sendAction(
+                    #selector(UIResponder.resignFirstResponder),
+                    to: nil, from: nil, for: nil
+                )
+            }
+        }
         .onAppear { restoreLastOpened() }
     }
 
@@ -38,7 +52,11 @@ struct RootView: View {
         } else if store.hasAnyContent() {
             PlaceholderView(sidebarOpen: $sidebarOpen)
         } else {
-            EmptyScreenView(selectedFile: $selectedFile, selectedTab: $selectedTab, sidebarOpen: $sidebarOpen)
+            EmptyScreenView(
+                selectedFile: $selectedFile,
+                selectedTab: $selectedTab,
+                sidebarOpen: $sidebarOpen
+            )
         }
     }
 
