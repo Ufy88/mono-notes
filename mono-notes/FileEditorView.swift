@@ -187,12 +187,14 @@ struct FileEditorView: View {
     }
 
     // MARK: - List editor
-    // editMode is NOT set to .active — no handles shown.
-    // Reorder is triggered by long-press via UITableView.beginInteractiveMovementForItem(at:)
-    // injected through the ReorderProxy UIViewRepresentable below.
+    // editMode stays .active so SwiftUI enables .onMove drag.
+    // The grey handles (UITableViewCellReorderControl) are hidden by
+    // HideReorderHandlesProxy, which walks the UITableView cell hierarchy
+    // and sets alpha = 0 on every UITableViewCellReorderControl it finds.
+    // Drag still works — the whole row is the hit-target while editing.
     private var listEditor: some View {
         List {
-            // Title row — not reorderable
+            // Title — not reorderable
             Section {
                 TitleTextField(
                     text: Binding(get: { file.title }, set: { file.title = $0; save() }),
@@ -266,10 +268,9 @@ struct FileEditorView: View {
                 .moveDisabled(true)
         }
         .listStyle(.plain)
-        // Inject long-press reorder without showing handles.
-        // ReorderProxy finds the UITableView in the hierarchy and installs
-        // a UILongPressGestureRecognizer that calls beginInteractiveMovementForItem.
-        .background(ReorderProxy())
+        .environment(\.editMode, .constant(.active))
+        // Overlay that hides reorder handles after each layout pass.
+        .background(HideReorderHandlesProxy())
     }
 
     // MARK: - Enter handling
@@ -356,78 +357,59 @@ struct FileEditorView: View {
     }
 }
 
-// MARK: - ReorderProxy
-// Zero-size UIViewRepresentable that walks the view hierarchy once to find
-// the UITableView backing the SwiftUI List, then installs a
-// UILongPressGestureRecognizer on it.  The gesture calls
-// beginInteractiveMovementForItem / updateInteractiveMovement /
-// endInteractiveMovement — the same internal API SwiftUI uses when
-// editMode is active — so rows drag smoothly with no visible handles.
+// MARK: - HideReorderHandlesProxy
+// UIViewRepresentable that finds the UITableView, then on every layout pass
+// walks all visible cells and sets alpha = 0 on UITableViewCellReorderControl.
+// editMode stays .active so SwiftUI's .onMove still works — handles are
+// simply invisible. The drag gesture itself remains fully functional.
 
-private struct ReorderProxy: UIViewRepresentable {
-    func makeUIView(context: Context) -> UIView {
-        let v = UIView()
-        v.isHidden = true
-        v.isUserInteractionEnabled = false
-        return v
+private struct HideReorderHandlesProxy: UIViewRepresentable {
+
+    func makeUIView(context: Context) -> HideHandlesView {
+        HideHandlesView()
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        // Walk up on the next run-loop tick so the List is fully in the hierarchy.
+    func updateUIView(_ uiView: HideHandlesView, context: Context) {
         DispatchQueue.main.async {
             guard let tableView = uiView.nearestAncestor(ofType: UITableView.self) else { return }
-            // Install only once.
-            if tableView.gestureRecognizers?.contains(where: { $0 is TableReorderGesture }) == true { return }
-            let gr = TableReorderGesture(target: context.coordinator,
-                                         action: #selector(Coordinator.handleLongPress(_:)))
-            gr.minimumPressDuration = 0.4
-            gr.delegate = context.coordinator
-            tableView.addGestureRecognizer(gr)
-            context.coordinator.tableView = tableView
-        }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    // MARK: Coordinator
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        weak var tableView: UITableView?
-
-        @objc func handleLongPress(_ gr: UILongPressGestureRecognizer) {
-            guard let tv = tableView else { return }
-            let location = gr.location(in: tv)
-
-            switch gr.state {
-            case .began:
-                guard let indexPath = tv.indexPathForRow(at: location) else { return }
-                // Dismiss keyboard so it doesn't fight the drag.
-                tv.endEditing(true)
-                tv.beginUpdates()
-                _ = tv.beginInteractiveMovementForItem(at: indexPath)
-                tv.endUpdates()
-
-            case .changed:
-                tv.updateInteractiveMovementTargetPosition(location)
-
-            case .ended:
-                tv.endInteractiveMovement()
-
-            default:
-                tv.cancelInteractiveMovement()
-            }
-        }
-
-        // Allow simultaneous recognition with the table's own scroll gesture,
-        // but fail-require scroll so a deliberate swipe still scrolls.
-        func gestureRecognizer(_ gr: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            return other is UIPanGestureRecognizer
+            uiView.attach(to: tableView)
         }
     }
 }
 
-// Subclass so we can identify our gesture among others on the table.
-private final class TableReorderGesture: UILongPressGestureRecognizer {}
+// UIView subclass that observes the table via display-link and hides handles.
+private final class HideHandlesView: UIView {
+    private weak var tableView: UITableView?
+    private var displayLink: CADisplayLink?
+
+    func attach(to tableView: UITableView) {
+        guard self.tableView !== tableView else { return }
+        self.tableView = tableView
+        displayLink?.invalidate()
+        let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30)
+        link.add(to: .main, forMode: .common)
+        self.displayLink = link
+    }
+
+    @objc private func tick() {
+        tableView?.visibleCells.forEach { hideHandles(in: $0) }
+    }
+
+    private func hideHandles(in view: UIView) {
+        if NSStringFromClass(type(of: view)) == "UITableViewCellReorderControl" {
+            if view.alpha != 0 { view.alpha = 0 }
+            return
+        }
+        view.subviews.forEach { hideHandles(in: $0) }
+    }
+
+    override func removeFromSuperview() {
+        displayLink?.invalidate()
+        displayLink = nil
+        super.removeFromSuperview()
+    }
+}
 
 // MARK: - UIView hierarchy helper
 private extension UIView {
