@@ -27,7 +27,7 @@ final class KeyboardObserver: ObservableObject {
     }
 }
 
-// MARK: - Accessory bar (flat, like system keyboard bar)
+// MARK: - Flat accessory bar
 
 final class AccessoryBar: UIView {
     private let stack = UIStackView()
@@ -35,8 +35,6 @@ final class AccessoryBar: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = UIColor.secondarySystemBackground
-
-        // top separator line
         let line = UIView()
         line.backgroundColor = UIColor.separator
         line.translatesAutoresizingMaskIntoConstraints = false
@@ -47,7 +45,6 @@ final class AccessoryBar: UIView {
             line.trailingAnchor.constraint(equalTo: trailingAnchor),
             line.heightAnchor.constraint(equalToConstant: 0.5)
         ])
-
         stack.axis = .horizontal
         stack.alignment = .center
         stack.spacing = 0
@@ -66,46 +63,32 @@ final class AccessoryBar: UIView {
                    indentSel: Selector, unindentSel: Selector,
                    separatorSel: Selector, dismissSel: Selector) {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-
         if isList {
-            stack.addArrangedSubview(barButton(
-                icon: "arrow.left.to.line", size: 13, target: target, action: unindentSel))
-            stack.addArrangedSubview(spacer(8))
-            stack.addArrangedSubview(barButton(
-                icon: "arrow.right.to.line", size: 13, target: target, action: indentSel))
-            stack.addArrangedSubview(spacer(16))
-            stack.addArrangedSubview(barButton(
-                icon: "minus", size: 13, target: target, action: separatorSel))
+            stack.addArrangedSubview(barBtn("arrow.left.to.line", 13, target, unindentSel))
+            stack.addArrangedSubview(gap(8))
+            stack.addArrangedSubview(barBtn("arrow.right.to.line", 13, target, indentSel))
+            stack.addArrangedSubview(gap(16))
+            stack.addArrangedSubview(barBtn("minus", 13, target, separatorSel))
         }
-
-        stack.addArrangedSubview(flexSpacer())
-
-        stack.addArrangedSubview(barButton(
-            icon: "keyboard.chevron.compact.down", size: 15, target: target, action: dismissSel))
+        stack.addArrangedSubview(flex())
+        stack.addArrangedSubview(barBtn("keyboard.chevron.compact.down", 15, target, dismissSel))
     }
 
-    private func barButton(icon: String, size: CGFloat, target: AnyObject, action: Selector) -> UIButton {
+    private func barBtn(_ icon: String, _ size: CGFloat, _ target: AnyObject, _ sel: Selector) -> UIButton {
         let btn = UIButton(type: .system)
-        let cfg = UIImage.SymbolConfiguration(pointSize: size, weight: .regular)
-        btn.setImage(UIImage(systemName: icon, withConfiguration: cfg), for: .normal)
+        btn.setImage(UIImage(systemName: icon,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .regular)), for: .normal)
         btn.tintColor = UIColor.secondaryLabel
-        btn.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
         btn.widthAnchor.constraint(equalToConstant: 44).isActive = true
         btn.heightAnchor.constraint(equalToConstant: 44).isActive = true
-        btn.addTarget(target, action: action, for: .touchUpInside)
+        btn.addTarget(target, action: sel, for: .touchUpInside)
         return btn
     }
-
-    private func spacer(_ w: CGFloat) -> UIView {
-        let v = UIView()
-        v.widthAnchor.constraint(equalToConstant: w).isActive = true
-        return v
+    private func gap(_ w: CGFloat) -> UIView {
+        let v = UIView(); v.widthAnchor.constraint(equalToConstant: w).isActive = true; return v
     }
-
-    private func flexSpacer() -> UIView {
-        let v = UIView()
-        v.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        return v
+    private func flex() -> UIView {
+        let v = UIView(); v.setContentHuggingPriority(.defaultLow, for: .horizontal); return v
     }
 }
 
@@ -121,7 +104,6 @@ struct FileEditorView: View {
     @State private var file: FileItem
     @State private var focusedItemID: UUID? = nil
     @State private var titleFocused: Bool = false
-    // When true, OutlineTextField will NOT auto-focus even if focusedItemID matches
     @State private var keyboardDismissed: Bool = false
 
     init(file: FileItem, tab: AppTab) {
@@ -135,31 +117,20 @@ struct FileEditorView: View {
             VStack(spacing: 0) {
                 toolbar
                 Divider()
-                if file.kind == .note {
-                    noteEditor
-                } else {
-                    listEditor
-                }
+                if file.kind == .note { noteEditor } else { listEditor }
             }
             .background(Color(.systemBackground))
 
-            // Show-keyboard FAB
             if !keyboard.isVisible {
                 Button {
                     keyboardDismissed = false
                     if file.kind == .note {
-                        // Note editor re-focus handled via NoteFocusTrigger
                         NotificationCenter.default.post(name: .focusNoteEditor, object: nil)
                     } else {
-                        if focusedItemID == nil {
-                            focusedItemID = file.listItems.first(where: { !$0.isSeparator })?.id
-                        } else {
-                            // retrigger
-                            let tmp = focusedItemID
+                        let id = focusedItemID ?? file.listItems.first(where: { !$0.isSeparator })?.id
+                        if let id {
                             focusedItemID = nil
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                focusedItemID = tmp
-                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = id }
                         }
                     }
                 } label: {
@@ -177,71 +148,48 @@ struct FileEditorView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: keyboard.isVisible)
-        .onAppear {
-            file = store.findFile(id: initialFile.id) ?? initialFile
-            // No auto-focus: user taps to start editing
-        }
+        .onAppear { file = store.findFile(id: initialFile.id) ?? initialFile }
     }
 
     // MARK: - Toolbar
-
     private var toolbar: some View {
         HStack(spacing: 16) {
             Text(file.dateLabel)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.tertiary)
+                .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
             Spacer()
             Text(file.kind == .note ? wordCountLabel : checkCountLabel)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.quaternary)
+                .font(.system(.caption2, design: .monospaced)).foregroundStyle(.quaternary)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 20).padding(.vertical, 12)
     }
 
     // MARK: - Note editor
-
     private var noteEditor: some View {
         NoteEditorWrapper(
             text: Binding(
                 get: { file.body },
                 set: { file.body = $0; file.updatedAt = Date(); store.updateFile(file, tab: tab) }
             ),
-            onDismiss: {
-                keyboardDismissed = true
-                KeyboardObserver.dismiss()
-            }
+            onDismiss: { keyboardDismissed = true; KeyboardObserver.dismiss() }
         )
     }
 
     // MARK: - List editor
-
     private var listEditor: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-
                 TitleTextField(
-                    text: Binding(
-                        get: { file.title },
-                        set: { file.title = $0; save() }
-                    ),
+                    text: Binding(get: { file.title }, set: { file.title = $0; save() }),
                     placeholder: file.autoTitle,
                     requestFocus: $titleFocused,
                     onReturn: {
-                        titleFocused = false
-                        // move focus to first list item
-                        keyboardDismissed = false
+                        titleFocused = false; keyboardDismissed = false
                         focusedItemID = file.listItems.first(where: { !$0.isSeparator })?.id
                             ?? addNewItem(after: nil).id
                     },
-                    onDismiss: {
-                        keyboardDismissed = true
-                        KeyboardObserver.dismiss()
-                    }
+                    onDismiss: { keyboardDismissed = true; KeyboardObserver.dismiss() }
                 )
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8)
 
                 Divider().padding(.horizontal, 16).padding(.bottom, 4)
 
@@ -253,66 +201,73 @@ struct FileEditorView: View {
                             SeparatorRow(
                                 blockCollapsed: item.blockCollapsed,
                                 preview: file.blockPreview(before: item.id),
-                                onToggle: {
-                                    file.listItems[idx].blockCollapsed.toggle()
-                                    save()
-                                }
+                                onToggle: { file.listItems[idx].blockCollapsed.toggle(); save() }
                             )
                         } else {
                             OutlineItemRow(
                                 item: $file.listItems[idx],
                                 hasChildren: file.hasChildren(after: item),
                                 isActive: focusedItemID == item.id && !keyboardDismissed,
-                                onFocus: {
-                                    keyboardDismissed = false
-                                    focusedItemID = item.id
-                                },
-                                onEnter: {
-                                    let current = file.listItems[idx]
-                                    if current.text.isEmpty, current.depth > 0 {
-                                        file.listItems[idx].depth -= 1; save()
-                                    } else {
-                                        let newItem = addNewItem(after: current.id); save()
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                            focusedItemID = newItem.id
-                                        }
-                                    }
-                                },
-                                onIndent: {
-                                    file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save()
-                                },
-                                onUnindent: {
-                                    if file.listItems[idx].depth > 0 {
-                                        file.listItems[idx].depth -= 1; save()
-                                    } else if file.listItems[idx].text.isEmpty {
-                                        let prev = prevVisibleID(before: idx, visible: visible)
-                                        file.listItems.remove(at: idx); save()
-                                        if let pid = prev {
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                                focusedItemID = pid
-                                            }
-                                        }
-                                    }
-                                },
+                                onFocus: { keyboardDismissed = false; focusedItemID = item.id },
+                                onEnter: { handleEnter(at: idx) },
+                                onIndent: { file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save() },
+                                onUnindent: { handleUnindent(at: idx, visible: visible) },
                                 onCheck: { file.listItems[idx].checked.toggle(); save() },
                                 onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
                                 onInsertSeparator: { insertSeparator(after: idx) },
-                                onDismissKeyboard: {
-                                    keyboardDismissed = true
-                                    KeyboardObserver.dismiss()
-                                },
+                                onDismissKeyboard: { keyboardDismissed = true; KeyboardObserver.dismiss() },
                                 onChange: { save() }
                             )
                         }
                     }
                 }
+
+                // Tap-to-focus empty area
+                Color.clear
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 300)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        keyboardDismissed = false
+                        let lastID = file.listItems.last(where: { !$0.isSeparator })?.id
+                        if let id = lastID {
+                            focusedItemID = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = id }
+                        } else {
+                            let item = addNewItem(after: nil); save()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = item.id }
+                        }
+                    }
             }
-            .padding(.bottom, 120)
+            .padding(.bottom, 40)
+        }
+    }
+
+    // MARK: - Enter handling
+    private func handleEnter(at idx: Int) {
+        // Always create a new row — never unindent on Enter
+        let current = file.listItems[idx]
+        let newItem = addNewItem(after: current.id)
+        save()
+        // Transfer focus directly without releasing keyboard
+        let newID = newItem.id
+        focusedItemID = newID
+    }
+
+    // MARK: - Unindent / delete empty
+    private func handleUnindent(at idx: Int, visible: Set<UUID>) {
+        if file.listItems[idx].depth > 0 {
+            file.listItems[idx].depth -= 1; save()
+        } else if file.listItems[idx].text.isEmpty {
+            let prev = prevVisibleID(before: idx, visible: visible)
+            file.listItems.remove(at: idx); save()
+            if let pid = prev {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = pid }
+            }
         }
     }
 
     // MARK: - Helpers
-
     @discardableResult
     private func addNewItem(after id: UUID?) -> ListItem {
         var depth = 0
@@ -327,9 +282,9 @@ struct FileEditorView: View {
     }
 
     private func insertSeparator(after idx: Int) {
-        var sep = ListItem(); sep.isSeparator = true; sep.depth = 0
+        var sep = ListItem(); sep.isSeparator = true
         file.listItems.insert(sep, at: idx + 1)
-        var blank = ListItem(); blank.depth = 0
+        var blank = ListItem()
         file.listItems.insert(blank, at: idx + 2)
         save()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = blank.id }
@@ -356,15 +311,12 @@ struct FileEditorView: View {
     }
 }
 
-// MARK: - Notification for note re-focus
-
+// MARK: - Notification
 extension Notification.Name {
     static let focusNoteEditor = Notification.Name("focusNoteEditor")
 }
 
-// MARK: - NoteEditorWrapper (UITextView via UIViewRepresentable)
-// Gives us full control over inputAccessoryView without SwiftUI TextEditor limitations.
-
+// MARK: - NoteEditorWrapper
 struct NoteEditorWrapper: UIViewRepresentable {
     @Binding var text: String
     let onDismiss: () -> Void
@@ -380,28 +332,14 @@ struct NoteEditorWrapper: UIViewRepresentable {
         tv.backgroundColor = .systemBackground
         tv.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         tv.delegate = context.coordinator
-
         let bar = AccessoryBar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
-        bar.configure(
-            isList: false,
-            target: context.coordinator,
-            indentSel: #selector(Coordinator.noop),
-            unindentSel: #selector(Coordinator.noop),
-            separatorSel: #selector(Coordinator.noop),
-            dismissSel: #selector(Coordinator.tappedDismiss)
-        )
+        bar.configure(isList: false, target: context.coordinator,
+                      indentSel: #selector(Coordinator.noop), unindentSel: #selector(Coordinator.noop),
+                      separatorSel: #selector(Coordinator.noop), dismissSel: #selector(Coordinator.tappedDismiss))
         tv.inputAccessoryView = bar
-
         context.coordinator.textView = tv
-
-        // Listen for show-keyboard notification from FAB
-        NotificationCenter.default.addObserver(
-            context.coordinator,
-            selector: #selector(Coordinator.focusFromFAB),
-            name: .focusNoteEditor,
-            object: nil
-        )
-
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.focusFromFAB),
+                                               name: .focusNoteEditor, object: nil)
         return tv
     }
 
@@ -414,11 +352,7 @@ struct NoteEditorWrapper: UIViewRepresentable {
         var parent: NoteEditorWrapper
         weak var textView: UITextView?
         init(parent: NoteEditorWrapper) { self.parent = parent }
-
-        func textViewDidChange(_ tv: UITextView) {
-            parent.text = tv.text
-        }
-
+        func textViewDidChange(_ tv: UITextView) { parent.text = tv.text }
         @objc func tappedDismiss() { parent.onDismiss() }
         @objc func focusFromFAB() { textView?.becomeFirstResponder() }
         @objc func noop() {}
@@ -426,7 +360,6 @@ struct NoteEditorWrapper: UIViewRepresentable {
 }
 
 // MARK: - SeparatorRow
-
 struct SeparatorRow: View {
     let blockCollapsed: Bool
     let preview: String
@@ -437,39 +370,30 @@ struct SeparatorRow: View {
             if blockCollapsed {
                 HStack(spacing: 6) {
                     Text(preview)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.tertiary).lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Button(action: onToggle) {
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.quaternary)
-                    }
-                    .buttonStyle(.plain)
+                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.quaternary)
+                    }.buttonStyle(.plain)
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 20).padding(.vertical, 6)
             }
             HStack(spacing: 8) {
                 Rectangle().fill(Color(.separator)).frame(height: 0.5)
                 Button(action: onToggle) {
                     Image(systemName: blockCollapsed ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.quaternary)
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.quaternary)
                         .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
+                }.buttonStyle(.plain)
             }
-            .padding(.leading, 20)
-            .padding(.trailing, 12)
-            .padding(.vertical, 4)
+            .padding(.leading, 20).padding(.trailing, 12).padding(.vertical, 4)
         }
     }
 }
 
 // MARK: - TitleTextField
-
 struct TitleTextField: UIViewRepresentable {
     @Binding var text: String
     let placeholder: String
@@ -489,16 +413,10 @@ struct TitleTextField: UIViewRepresentable {
         field.delegate = context.coordinator
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
         let bar = AccessoryBar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
-        bar.configure(
-            isList: false,
-            target: context.coordinator,
-            indentSel: #selector(Coordinator.noop),
-            unindentSel: #selector(Coordinator.noop),
-            separatorSel: #selector(Coordinator.noop),
-            dismissSel: #selector(Coordinator.tappedDismiss)
-        )
+        bar.configure(isList: false, target: context.coordinator,
+                      indentSel: #selector(Coordinator.noop), unindentSel: #selector(Coordinator.noop),
+                      separatorSel: #selector(Coordinator.noop), dismissSel: #selector(Coordinator.tappedDismiss))
         field.inputAccessoryView = bar
         context.coordinator.field = field
         return field
@@ -506,38 +424,31 @@ struct TitleTextField: UIViewRepresentable {
 
     func updateUIView(_ field: UITextField, context: Context) {
         context.coordinator.parent = self
-        // Only sync text when NOT actively editing to avoid cursor-jump bug
         if field.text != text && !field.isFirstResponder { field.text = text }
-        field.attributedPlaceholder = NSAttributedString(
-            string: placeholder,
-            attributes: [.foregroundColor: UIColor.tertiaryLabel,
-                         .font: UIFont.monospacedSystemFont(ofSize: 20, weight: .semibold)])
+        field.attributedPlaceholder = NSAttributedString(string: placeholder, attributes: [
+            .foregroundColor: UIColor.tertiaryLabel,
+            .font: UIFont.monospacedSystemFont(ofSize: 20, weight: .semibold)])
         if requestFocus && !field.isFirstResponder {
             DispatchQueue.main.async { field.becomeFirstResponder(); self.requestFocus = false }
         }
-        // Never resignFirstResponder from here
     }
 
     class Coordinator: NSObject, UITextFieldDelegate {
         var parent: TitleTextField
         weak var field: UITextField?
         init(parent: TitleTextField) { self.parent = parent }
-
         func textField(_ tf: UITextField, shouldChangeCharactersIn r: NSRange, replacementString s: String) -> Bool {
             let cur = tf.text ?? ""
             if let range = Range(r, in: cur) { parent.text = cur.replacingCharacters(in: range, with: s) }
             return true
         }
-        func textFieldShouldReturn(_ tf: UITextField) -> Bool {
-            tf.resignFirstResponder(); parent.onReturn(); return false
-        }
+        func textFieldShouldReturn(_ tf: UITextField) -> Bool { tf.resignFirstResponder(); parent.onReturn(); return false }
         @objc func tappedDismiss() { field?.resignFirstResponder(); parent.onDismiss() }
         @objc func noop() {}
     }
 }
 
 // MARK: - OutlineItemRow
-
 struct OutlineItemRow: View {
     @Binding var item: ListItem
     let hasChildren: Bool
@@ -553,15 +464,16 @@ struct OutlineItemRow: View {
     let onChange: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 0) {
+        HStack(alignment: .top, spacing: 0) {
             if item.depth > 0 { Spacer().frame(width: CGFloat(item.depth) * 20) }
             Text("\u{2022}")
-                .font(.system(size: 15, weight: .bold, design: .monospaced))
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
                 .frame(width: 22, alignment: .center)
+                .padding(.top, 3) // align bullet with first line
                 .onTapGesture { onCheck() }
 
-            OutlineTextField(
+            OutlineTextView(
                 text: $item.text,
                 isActive: isActive,
                 isChecked: item.checked,
@@ -573,30 +485,26 @@ struct OutlineItemRow: View {
                 onDismissKeyboard: onDismissKeyboard,
                 onChange: onChange
             )
-            .frame(minHeight: 32)
 
             if hasChildren {
                 Button(action: onToggleCollapse) {
                     Image(systemName: item.isCollapsed ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.quaternary)
-                        .frame(width: 28, height: 32)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.quaternary)
+                        .frame(width: 28, height: 28).contentShape(Rectangle())
+                }.buttonStyle(.plain).padding(.top, 1)
             } else {
                 Spacer().frame(width: 28)
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
     }
 }
 
-// MARK: - OutlineTextField
+// MARK: - OutlineTextView (UITextView-based, multiline)
 
-struct OutlineTextField: UIViewRepresentable {
+struct OutlineTextView: UIViewRepresentable {
     @Binding var text: String
     let isActive: Bool
     let isChecked: Bool
@@ -610,61 +518,86 @@ struct OutlineTextField: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
-    func makeUIView(context: Context) -> BackspaceAwareTextField {
-        let field = BackspaceAwareTextField()
-        field.font = UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
-        field.autocorrectionType = .no
-        field.autocapitalizationType = .none
-        field.spellCheckingType = .no
-        field.returnKeyType = .next
-        field.delegate = context.coordinator
-        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        field.onBackspaceAtStart = { context.coordinator.parent.onUnindent() }
+    func makeUIView(context: Context) -> UITextView {
+        let tv = GrowingTextView()
+        tv.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+        tv.autocorrectionType = .no
+        tv.autocapitalizationType = .none
+        tv.spellCheckingType = .no
+        tv.isScrollEnabled = false
+        tv.backgroundColor = .clear
+        tv.textContainerInset = UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+        tv.textContainer.lineFragmentPadding = 0
+        tv.returnKeyType = .next
+        tv.delegate = context.coordinator
+
+        tv.onBackspaceAtStart = { [weak context] in
+            context?.coordinator.parent.onUnindent()
+        }
 
         let bar = AccessoryBar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
-        bar.configure(
-            isList: true,
-            target: context.coordinator,
-            indentSel: #selector(Coordinator.tappedIndent),
-            unindentSel: #selector(Coordinator.tappedUnindent),
-            separatorSel: #selector(Coordinator.tappedSeparator),
-            dismissSel: #selector(Coordinator.tappedDismiss)
-        )
-        field.inputAccessoryView = bar
-        return field
+        bar.configure(isList: true, target: context.coordinator,
+                      indentSel: #selector(Coordinator.tappedIndent),
+                      unindentSel: #selector(Coordinator.tappedUnindent),
+                      separatorSel: #selector(Coordinator.tappedSeparator),
+                      dismissSel: #selector(Coordinator.tappedDismiss))
+        tv.inputAccessoryView = bar
+        return tv
     }
 
-    func updateUIView(_ field: BackspaceAwareTextField, context: Context) {
+    func updateUIView(_ tv: UITextView, context: Context) {
         context.coordinator.parent = self
-        field.onBackspaceAtStart = { context.coordinator.parent.onUnindent() }
-        if field.text != text { field.text = text }
+        if let gv = tv as? GrowingTextView {
+            gv.onBackspaceAtStart = { context.coordinator.parent.onUnindent() }
+        }
 
-        field.defaultTextAttributes = isChecked
+        if tv.text != text { tv.text = text }
+
+        let paraStyle = NSMutableParagraphStyle()
+        paraStyle.lineSpacing = 1
+        let attrs: [NSAttributedString.Key: Any] = isChecked
             ? [.strikethroughStyle: NSUnderlineStyle.single.rawValue,
                .foregroundColor: UIColor.tertiaryLabel,
-               .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)]
+               .font: UIFont.monospacedSystemFont(ofSize: 13, weight: .medium),
+               .paragraphStyle: paraStyle]
             : [.foregroundColor: UIColor.label,
-               .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)]
+               .font: UIFont.monospacedSystemFont(ofSize: 13, weight: .medium),
+               .paragraphStyle: paraStyle]
 
-        if isActive && !field.isFirstResponder {
-            DispatchQueue.main.async { field.becomeFirstResponder() }
-        } else if !isActive && field.isFirstResponder {
-            field.resignFirstResponder()
+        // Only update attributes if changed to avoid cursor jump
+        let current = tv.attributedText
+        let newAttr = NSAttributedString(string: tv.text, attributes: attrs)
+        if current != newAttr { tv.attributedText = newAttr }
+
+        if isActive && !tv.isFirstResponder {
+            DispatchQueue.main.async { tv.becomeFirstResponder() }
+        } else if !isActive && tv.isFirstResponder {
+            tv.resignFirstResponder()
         }
     }
 
-    class Coordinator: NSObject, UITextFieldDelegate {
-        var parent: OutlineTextField
-        init(parent: OutlineTextField) { self.parent = parent }
+    class Coordinator: NSObject, UITextViewDelegate {
+        var parent: OutlineTextView
+        // Track if we just fired onEnter to suppress the newline character
+        var suppressNextNewline = false
+        init(parent: OutlineTextView) { self.parent = parent }
 
-        func textField(_ tf: UITextField, shouldChangeCharactersIn r: NSRange, replacementString s: String) -> Bool {
-            let cur = tf.text ?? ""
-            if let range = Range(r, in: cur) { parent.text = cur.replacingCharacters(in: range, with: s); parent.onChange() }
+        func textView(_ tv: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+            if text == "\n" {
+                parent.onEnter()
+                return false // don't insert newline — new row handles it
+            }
             return true
         }
-        func textFieldShouldReturn(_ tf: UITextField) -> Bool { parent.onEnter(); return false }
-        func textFieldDidBeginEditing(_ tf: UITextField) { parent.onFocus() }
+
+        func textViewDidChange(_ tv: UITextView) {
+            if parent.text != tv.text {
+                parent.text = tv.text
+                parent.onChange()
+            }
+        }
+
+        func textViewDidBeginEditing(_ tv: UITextView) { parent.onFocus() }
 
         @objc func tappedIndent() { parent.onIndent() }
         @objc func tappedUnindent() { parent.onUnindent() }
@@ -673,23 +606,28 @@ struct OutlineTextField: UIViewRepresentable {
     }
 }
 
-// MARK: - BackspaceAwareTextField
+// MARK: - GrowingTextView (UITextView with backspace detection)
 
-class BackspaceAwareTextField: UITextField {
+class GrowingTextView: UITextView {
     var onBackspaceAtStart: (() -> Void)?
+
     override func deleteBackward() {
         let atStart: Bool = {
             guard let r = selectedTextRange else { return false }
             return r.isEmpty && offset(from: beginningOfDocument, to: r.start) == 0
         }()
-        let empty = (text ?? "").isEmpty
-        if atStart || empty { onBackspaceAtStart?(); if empty { return } }
+        if atStart && text.isEmpty {
+            onBackspaceAtStart?()
+            return
+        }
+        if atStart && !text.isEmpty {
+            onBackspaceAtStart?()
+        }
         super.deleteBackward()
     }
 }
 
 // MARK: - FileItem extensions
-
 extension FileItem {
     var autoTitle: String {
         listItems.first(where: { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty && !$0.isSeparator })?.text ?? "Untitled"
