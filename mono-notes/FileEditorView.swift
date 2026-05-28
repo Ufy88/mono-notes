@@ -101,46 +101,46 @@ final class AccessoryBar: UIView {
 }
 
 // MARK: - ListDropZone
-// iter-2: pure UI, no array mutation.
-// Shows a thin accent line when a ListItemPayload hovers over it.
-// `insertAfterIndex` = the listItems index after which the drop would land.
-// -1 means "before the very first item".
-// onDrop currently only prints to console — mutation comes in iter-3.
+// Height = 0 at rest (invisible, no layout impact).
+// Expands to 20pt and shows accent line only while a drag is hovering.
+// Color.clear does NOT receive drop events on iOS — using opacity(0.001) rectangle instead.
 
 struct ListDropZone: View {
     let insertAfterIndex: Int
-    let onDrop: (UUID) -> Void   // will be wired to real logic in iter-3
+    let onDrop: (UUID) -> Void
 
     @State private var isTargeted = false
 
     var body: some View {
         ZStack {
-            // Transparent hit area — tall enough to be easy to land on during drag
-            Color.clear
+            // Hit area: nearly-transparent but rendered, so iOS hit-tests it.
+            // Height 0 at rest keeps layout intact; expands during drag hover.
+            Rectangle()
+                .fill(Color.primary.opacity(0.001))
                 .frame(maxWidth: .infinity)
-                .frame(height: isTargeted ? 20 : 10)
+                .frame(height: isTargeted ? 20 : 0)
+                .clipped()
 
-            // Visual indicator line
             if isTargeted {
-                HStack(spacing: 6) {
+                HStack(spacing: 0) {
                     Circle()
                         .fill(Color.accentColor)
                         .frame(width: 6, height: 6)
+                        .padding(.leading, 16)
                     Rectangle()
                         .fill(Color.accentColor)
                         .frame(height: 1.5)
                     Circle()
                         .fill(Color.accentColor)
                         .frame(width: 6, height: 6)
+                        .padding(.trailing, 16)
                 }
-                .padding(.horizontal, 16)
-                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.12), value: isTargeted)
+        .animation(.easeOut(duration: 0.1), value: isTargeted)
         .dropDestination(for: ListItemPayload.self) { items, _ in
             guard let payload = items.first else { return false }
-            // iter-2: log only, no mutation
             print("[drop-zone] would insert \(payload.id) after index \(insertAfterIndex)")
             onDrop(payload.id)
             return true
@@ -257,7 +257,6 @@ struct FileEditorView: View {
 
                 let visible = file.visibleItemIDs()
 
-                // Drop zone BEFORE the first item (insertAfterIndex = -1)
                 ListDropZone(insertAfterIndex: -1) { _ in }
 
                 ForEach($file.listItems, id: \.id) { $item in
@@ -281,7 +280,6 @@ struct FileEditorView: View {
                                 onDismissKeyboard: { keyboardDismissed = true; KeyboardObserver.dismiss() },
                                 onChange: { save() }
                             )
-                            // Drop zone AFTER each non-separator visible item
                             ListDropZone(insertAfterIndex: idx) { _ in }
                         }
                     }
@@ -327,11 +325,9 @@ struct FileEditorView: View {
             return
         }
         guard file.listItems[idx].text.isEmpty else { return }
-
         let prevID = prevVisibleID(before: idx, visible: visible)
         file.listItems.remove(at: idx)
         save()
-
         if let pid = prevID {
             focusedItemID = pid
             NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": pid])
