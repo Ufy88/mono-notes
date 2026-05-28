@@ -244,17 +244,30 @@ struct FileEditorView: View {
     }
 
     // MARK: - Enter handling
+    // Rules:
+    // - current row has text  → create new row below, same depth, focus it
+    // - current row is empty, depth > 0 → unindent (move level up)
+    // - current row is empty, depth == 0 → do nothing
     private func handleEnter(at idx: Int) {
-        // Always create a new row — never unindent on Enter
         let current = file.listItems[idx]
+        let isEmpty = current.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        if isEmpty {
+            if current.depth > 0 {
+                file.listItems[idx].depth -= 1
+                save()
+            }
+            // depth == 0 and empty: noop
+            return
+        }
+
+        // Row has text — create new row
         let newItem = addNewItem(after: current.id)
         save()
-        // Transfer focus directly without releasing keyboard
-        let newID = newItem.id
-        focusedItemID = newID
+        focusedItemID = newItem.id
     }
 
-    // MARK: - Unindent / delete empty
+    // MARK: - Backspace unindent / delete empty
     private func handleUnindent(at idx: Int, visible: Set<UUID>) {
         if file.listItems[idx].depth > 0 {
             file.listItems[idx].depth -= 1; save()
@@ -470,7 +483,7 @@ struct OutlineItemRow: View {
                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
                 .frame(width: 22, alignment: .center)
-                .padding(.top, 3) // align bullet with first line
+                .padding(.top, 3)
                 .onTapGesture { onCheck() }
 
             OutlineTextView(
@@ -518,7 +531,7 @@ struct OutlineTextView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
-    func makeUIView(context: Context) -> UITextView {
+    func makeUIView(context: Context) -> GrowingTextView {
         let tv = GrowingTextView()
         tv.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .medium)
         tv.autocorrectionType = .no
@@ -531,9 +544,8 @@ struct OutlineTextView: UIViewRepresentable {
         tv.returnKeyType = .next
         tv.delegate = context.coordinator
 
-        tv.onBackspaceAtStart = { [weak context] in
-            context?.coordinator.parent.onUnindent()
-        }
+        // Store coordinator reference in GrowingTextView to avoid capturing Context
+        tv.coordinator = context.coordinator
 
         let bar = AccessoryBar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
         bar.configure(isList: true, target: context.coordinator,
@@ -545,11 +557,10 @@ struct OutlineTextView: UIViewRepresentable {
         return tv
     }
 
-    func updateUIView(_ tv: UITextView, context: Context) {
+    func updateUIView(_ tv: GrowingTextView, context: Context) {
         context.coordinator.parent = self
-        if let gv = tv as? GrowingTextView {
-            gv.onBackspaceAtStart = { context.coordinator.parent.onUnindent() }
-        }
+        // Keep coordinator reference fresh
+        tv.coordinator = context.coordinator
 
         if tv.text != text { tv.text = text }
 
@@ -564,10 +575,8 @@ struct OutlineTextView: UIViewRepresentable {
                .font: UIFont.monospacedSystemFont(ofSize: 13, weight: .medium),
                .paragraphStyle: paraStyle]
 
-        // Only update attributes if changed to avoid cursor jump
-        let current = tv.attributedText
         let newAttr = NSAttributedString(string: tv.text, attributes: attrs)
-        if current != newAttr { tv.attributedText = newAttr }
+        if tv.attributedText != newAttr { tv.attributedText = newAttr }
 
         if isActive && !tv.isFirstResponder {
             DispatchQueue.main.async { tv.becomeFirstResponder() }
@@ -578,14 +587,13 @@ struct OutlineTextView: UIViewRepresentable {
 
     class Coordinator: NSObject, UITextViewDelegate {
         var parent: OutlineTextView
-        // Track if we just fired onEnter to suppress the newline character
-        var suppressNextNewline = false
+
         init(parent: OutlineTextView) { self.parent = parent }
 
         func textView(_ tv: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
             if text == "\n" {
                 parent.onEnter()
-                return false // don't insert newline — new row handles it
+                return false
             }
             return true
         }
@@ -606,24 +614,25 @@ struct OutlineTextView: UIViewRepresentable {
     }
 }
 
-// MARK: - GrowingTextView (UITextView with backspace detection)
+// MARK: - GrowingTextView
 
 class GrowingTextView: UITextView {
-    var onBackspaceAtStart: (() -> Void)?
+    // Direct coordinator reference — avoids `weak Context` compile error
+    weak var coordinator: OutlineTextView.Coordinator?
 
     override func deleteBackward() {
         let atStart: Bool = {
             guard let r = selectedTextRange else { return false }
             return r.isEmpty && offset(from: beginningOfDocument, to: r.start) == 0
         }()
-        if atStart && text.isEmpty {
-            onBackspaceAtStart?()
-            return
+        // Fire unindent if cursor is at start (regardless of text content)
+        if atStart {
+            coordinator?.parent.onUnindent()
         }
-        if atStart && !text.isEmpty {
-            onBackspaceAtStart?()
+        // Only call super if there's text to delete
+        if !text.isEmpty {
+            super.deleteBackward()
         }
-        super.deleteBackward()
     }
 }
 
