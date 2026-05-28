@@ -524,6 +524,25 @@ struct OutlineItemRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 2)
         .contentShape(Rectangle())
+        // MARK: Drag — iter-1
+        // Long-press activates drag. The payload carries only id + text (no depth/checked —
+        // those are resolved from the live array in later iterations).
+        .draggable(ListItemPayload(id: item.id, text: item.text)) {
+            // Drag preview: bullet + first 40 chars of text, monospaced, no background
+            HStack(spacing: 6) {
+                Text("\u{2022}")
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Text(item.text.prefix(40).isEmpty ? "…" : String(item.text.prefix(40)))
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
     }
 }
 
