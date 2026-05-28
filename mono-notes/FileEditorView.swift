@@ -194,23 +194,34 @@ struct FileEditorView: View {
                 Divider().padding(.horizontal, 16).padding(.bottom, 4)
 
                 let visible = file.visibleItemIDs()
-                ForEach(file.listItems.indices, id: \.self) { idx in
-                    let item = file.listItems[idx]
+
+                // FIX 1: iterate by item.id, not by index
+                // This prevents SwiftUI from destroying/recreating UITextView on list mutations,
+                // which caused the keyboard to flash on every Enter press.
+                ForEach($file.listItems, id: \.id) { $item in
                     if visible.contains(item.id) {
                         if item.isSeparator {
+                            let idx = file.listItems.firstIndex(where: { $0.id == item.id }) ?? 0
                             SeparatorRow(
                                 blockCollapsed: item.blockCollapsed,
                                 preview: file.blockPreview(before: item.id),
-                                onToggle: { file.listItems[idx].blockCollapsed.toggle(); save() }
+                                onToggle: {
+                                    file.listItems[idx].blockCollapsed.toggle()
+                                    save()
+                                }
                             )
                         } else {
+                            let idx = file.listItems.firstIndex(where: { $0.id == item.id }) ?? 0
                             OutlineItemRow(
-                                item: $file.listItems[idx],
+                                item: $item,
                                 hasChildren: file.hasChildren(after: item),
                                 isActive: focusedItemID == item.id && !keyboardDismissed,
                                 onFocus: { keyboardDismissed = false; focusedItemID = item.id },
                                 onEnter: { handleEnter(at: idx) },
-                                onIndent: { file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save() },
+                                onIndent: {
+                                    file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4)
+                                    save()
+                                },
                                 onUnindent: { handleUnindent(at: idx, visible: visible) },
                                 onCheck: { file.listItems[idx].checked.toggle(); save() },
                                 onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
@@ -222,7 +233,6 @@ struct FileEditorView: View {
                     }
                 }
 
-                // Tap-to-focus empty area
                 Color.clear
                     .frame(maxWidth: .infinity)
                     .frame(height: 300)
@@ -244,10 +254,6 @@ struct FileEditorView: View {
     }
 
     // MARK: - Enter handling
-    // Rules:
-    // - current row has text  → create new row below, same depth, focus it
-    // - current row is empty, depth > 0 → unindent (move level up)
-    // - current row is empty, depth == 0 → do nothing
     private func handleEnter(at idx: Int) {
         let current = file.listItems[idx]
         let isEmpty = current.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -257,13 +263,13 @@ struct FileEditorView: View {
                 file.listItems[idx].depth -= 1
                 save()
             }
-            // depth == 0 and empty: noop
             return
         }
 
-        // Row has text — create new row
         let newItem = addNewItem(after: current.id)
         save()
+        // FIX 1 cont: focusedItemID change does NOT recreate views because ForEach is keyed by id.
+        // The existing UITextView for the new row simply receives isActive=true in updateUIView.
         focusedItemID = newItem.id
     }
 
@@ -297,7 +303,7 @@ struct FileEditorView: View {
     private func insertSeparator(after idx: Int) {
         var sep = ListItem(); sep.isSeparator = true
         file.listItems.insert(sep, at: idx + 1)
-        var blank = ListItem()
+        let blank = ListItem()
         file.listItems.insert(blank, at: idx + 2)
         save()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = blank.id }
@@ -498,6 +504,9 @@ struct OutlineItemRow: View {
                 onDismissKeyboard: onDismissKeyboard,
                 onChange: onChange
             )
+            // FIX 3: min-width 0 so the HStack doesn't push OutlineTextView to grow unbounded.
+            // The actual width constraint is set inside OutlineTextView via layoutSubviews.
+            .frame(minWidth: 0)
 
             if hasChildren {
                 Button(action: onToggleCollapse) {
@@ -515,7 +524,7 @@ struct OutlineItemRow: View {
     }
 }
 
-// MARK: - OutlineTextView (UITextView-based, multiline)
+// MARK: - OutlineTextView
 
 struct OutlineTextView: UIViewRepresentable {
     @Binding var text: String
@@ -541,11 +550,16 @@ struct OutlineTextView: UIViewRepresentable {
         tv.backgroundColor = .clear
         tv.textContainerInset = UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
         tv.textContainer.lineFragmentPadding = 0
+        // FIX 3: tell the text container to track the view width so text wraps correctly
+        tv.textContainer.widthTracksTextView = true
+        tv.textContainer.heightTracksTextView = false
         tv.returnKeyType = .next
         tv.delegate = context.coordinator
-
-        // Store coordinator reference in GrowingTextView to avoid capturing Context
         tv.coordinator = context.coordinator
+
+        // FIX 3: prevent horizontal compression resistance from overriding layout width
+        tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        tv.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let bar = AccessoryBar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
         bar.configure(isList: true, target: context.coordinator,
@@ -559,7 +573,6 @@ struct OutlineTextView: UIViewRepresentable {
 
     func updateUIView(_ tv: GrowingTextView, context: Context) {
         context.coordinator.parent = self
-        // Keep coordinator reference fresh
         tv.coordinator = context.coordinator
 
         if tv.text != text { tv.text = text }
@@ -578,10 +591,14 @@ struct OutlineTextView: UIViewRepresentable {
         let newAttr = NSAttributedString(string: tv.text, attributes: attrs)
         if tv.attributedText != newAttr { tv.attributedText = newAttr }
 
+        // FIX 1: becomeFirstResponder only when truly needed — prevents keyboard flash.
+        // isActive changes only affect the specific row's UITextView, not all rows.
         if isActive && !tv.isFirstResponder {
             DispatchQueue.main.async { tv.becomeFirstResponder() }
         } else if !isActive && tv.isFirstResponder {
-            tv.resignFirstResponder()
+            // FIX 2: only resign if keyboard was explicitly dismissed (e.g. sidebar opened).
+            // Do NOT resign just because another row became active — that causes the flash.
+            // RootView already calls resignFirstResponder globally when sidebar opens.
         }
     }
 
@@ -617,7 +634,6 @@ struct OutlineTextView: UIViewRepresentable {
 // MARK: - GrowingTextView
 
 class GrowingTextView: UITextView {
-    // Direct coordinator reference — avoids `weak Context` compile error
     weak var coordinator: OutlineTextView.Coordinator?
 
     override func deleteBackward() {
@@ -625,11 +641,9 @@ class GrowingTextView: UITextView {
             guard let r = selectedTextRange else { return false }
             return r.isEmpty && offset(from: beginningOfDocument, to: r.start) == 0
         }()
-        // Fire unindent if cursor is at start (regardless of text content)
         if atStart {
             coordinator?.parent.onUnindent()
         }
-        // Only call super if there's text to delete
         if !text.isEmpty {
             super.deleteBackward()
         }
