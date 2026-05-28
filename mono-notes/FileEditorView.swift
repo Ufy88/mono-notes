@@ -12,6 +12,7 @@ struct FileEditorView: View {
     @State private var file: FileItem
     @FocusState private var textFocused: Bool
     @State private var focusedItemID: UUID? = nil
+    @State private var titleFocused: Bool = false
 
     init(file: FileItem, tab: AppTab) {
         self.initialFile = file
@@ -80,7 +81,7 @@ struct FileEditorView: View {
                 store.updateFile(file, tab: tab)
             }
         ))
-        .font(.system(.body, design: .monospaced))
+        .font(.system(.footnote, design: .monospaced).weight(.medium))
         .focused($textFocused)
         .padding(.horizontal, 16)
         .padding(.top, 4)
@@ -93,53 +94,87 @@ struct FileEditorView: View {
     private var listEditor: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
+
+                // ── Title field ──
+                TitleTextField(
+                    text: Binding(
+                        get: { file.title },
+                        set: { file.title = $0; save() }
+                    ),
+                    placeholder: file.autoTitle,
+                    isFocused: $titleFocused,
+                    onReturn: {
+                        // Move focus to first list item
+                        if file.listItems.isEmpty {
+                            let item = addNewItem(after: nil)
+                            focusedItemID = item.id
+                        } else {
+                            focusedItemID = file.listItems.first?.id
+                        }
+                        titleFocused = false
+                    }
+                )
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+                Divider().padding(.horizontal, 16).padding(.bottom, 4)
+
+                // ── Rows ──
+                let visible = file.visibleItemIDs()
                 ForEach(file.listItems.indices, id: \.self) { idx in
-                    OutlineItemRow(
-                        item: $file.listItems[idx],
-                        isActive: focusedItemID == file.listItems[idx].id,
-                        onFocus: { focusedItemID = file.listItems[idx].id },
-                        onEnter: {
-                            let item = file.listItems[idx]
-                            if item.text.isEmpty {
-                                // Empty row: unindent child, nop at root
-                                if item.depth > 0 {
-                                    file.listItems[idx].depth -= 1
+                    let item = file.listItems[idx]
+                    if visible.contains(item.id) {
+                        OutlineItemRow(
+                            item: $file.listItems[idx],
+                            hasChildren: file.hasChildren(after: item),
+                            isActive: focusedItemID == item.id,
+                            onFocus: { focusedItemID = item.id },
+                            onEnter: {
+                                let current = file.listItems[idx]
+                                if current.text.isEmpty {
+                                    if current.depth > 0 {
+                                        file.listItems[idx].depth -= 1
+                                        save()
+                                    }
+                                } else {
+                                    let newItem = addNewItem(after: current.id)
                                     save()
-                                }
-                            } else {
-                                // Non-empty: add sibling below
-                                let newItem = addNewItem(after: item.id)
-                                save()
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                    focusedItemID = newItem.id
-                                }
-                            }
-                        },
-                        onIndent: {
-                            file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4)
-                            save()
-                        },
-                        onUnindent: {
-                            if file.listItems[idx].depth > 0 {
-                                file.listItems[idx].depth -= 1
-                                save()
-                            } else if file.listItems[idx].text.isEmpty {
-                                let prevID = idx > 0 ? file.listItems[idx - 1].id : nil
-                                file.listItems.remove(at: idx)
-                                save()
-                                if let pid = prevID {
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                        focusedItemID = pid
+                                        focusedItemID = newItem.id
                                     }
                                 }
-                            }
-                        },
-                        onCheck: {
-                            file.listItems[idx].checked.toggle()
-                            save()
-                        },
-                        onChange: { save() }
-                    )
+                            },
+                            onIndent: {
+                                file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4)
+                                save()
+                            },
+                            onUnindent: {
+                                if file.listItems[idx].depth > 0 {
+                                    file.listItems[idx].depth -= 1
+                                    save()
+                                } else if file.listItems[idx].text.isEmpty {
+                                    let prevVisible = prevVisibleID(before: idx, visible: visible)
+                                    file.listItems.remove(at: idx)
+                                    save()
+                                    if let pid = prevVisible {
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                            focusedItemID = pid
+                                        }
+                                    }
+                                }
+                            },
+                            onCheck: {
+                                file.listItems[idx].checked.toggle()
+                                save()
+                            },
+                            onToggleCollapse: {
+                                file.listItems[idx].isCollapsed.toggle()
+                                save()
+                            },
+                            onChange: { save() }
+                        )
+                    }
                 }
             }
             .padding(.bottom, 120)
@@ -162,6 +197,14 @@ struct FileEditorView: View {
         return item
     }
 
+    private func prevVisibleID(before idx: Int, visible: Set<UUID>) -> UUID? {
+        guard idx > 0 else { return nil }
+        for i in stride(from: idx - 1, through: 0, by: -1) {
+            if visible.contains(file.listItems[i].id) { return file.listItems[i].id }
+        }
+        return nil
+    }
+
     private func save() {
         file.updatedAt = Date()
         store.updateFile(file, tab: tab)
@@ -180,16 +223,94 @@ struct FileEditorView: View {
     }
 }
 
+// MARK: - TitleTextField
+
+struct TitleTextField: UIViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    @Binding var isFocused: Bool
+    let onReturn: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField()
+        field.font = UIFont.monospacedSystemFont(ofSize: 20, weight: .semibold)
+        field.returnKeyType = .next
+        field.autocorrectionType = .no
+        field.autocapitalizationType = .none
+        field.spellCheckingType = .no
+        field.delegate = context.coordinator
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return field
+    }
+
+    func updateUIView(_ field: UITextField, context: Context) {
+        context.coordinator.parent = self
+        if field.text != text { field.text = text }
+        field.attributedPlaceholder = NSAttributedString(
+            string: placeholder,
+            attributes: [.foregroundColor: UIColor.tertiaryLabel,
+                         .font: UIFont.monospacedSystemFont(ofSize: 20, weight: .semibold)]
+        )
+        if isFocused && !field.isFirstResponder {
+            DispatchQueue.main.async { field.becomeFirstResponder() }
+        } else if !isFocused && field.isFirstResponder {
+            field.resignFirstResponder()
+        }
+    }
+
+    class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: TitleTextField
+        init(parent: TitleTextField) { self.parent = parent }
+
+        func textField(_ textField: UITextField,
+                       shouldChangeCharactersIn range: NSRange,
+                       replacementString string: String) -> Bool {
+            let current = textField.text ?? ""
+            if let r = Range(range, in: current) {
+                parent.text = current.replacingCharacters(in: r, with: string)
+            }
+            return true
+        }
+
+        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            parent.onReturn()
+            return false
+        }
+
+        func textFieldDidBeginEditing(_ textField: UITextField) {
+            parent.isFocused = true
+        }
+
+        func textFieldDidEndEditing(_ textField: UITextField) {
+            parent.isFocused = false
+        }
+    }
+}
+
+// MARK: - FileItem auto-title helper
+
+extension FileItem {
+    var autoTitle: String {
+        let first = listItems.first(where: { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty })
+        return first?.text ?? "Untitled"
+    }
+}
+
 // MARK: - OutlineItemRow
 
 struct OutlineItemRow: View {
     @Binding var item: ListItem
+    let hasChildren: Bool
     let isActive: Bool
     let onFocus: () -> Void
     let onEnter: () -> Void
     let onIndent: () -> Void
     let onUnindent: () -> Void
     let onCheck: () -> Void
+    let onToggleCollapse: () -> Void
     let onChange: () -> Void
 
     var body: some View {
@@ -198,12 +319,14 @@ struct OutlineItemRow: View {
                 Spacer().frame(width: CGFloat(item.depth) * 20)
             }
 
+            // Bullet
             Text("\u{2022}")
-                .font(.system(size: 16, weight: .bold, design: .monospaced))
+                .font(.system(size: 15, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
-                .frame(width: 24, alignment: .center)
+                .frame(width: 22, alignment: .center)
                 .onTapGesture { onCheck() }
 
+            // Text field
             OutlineTextField(
                 text: $item.text,
                 isActive: isActive,
@@ -214,12 +337,24 @@ struct OutlineItemRow: View {
                 onUnindent: onUnindent,
                 onChange: onChange
             )
-            .frame(minHeight: 36)
+            .frame(minHeight: 32)
 
-            Spacer()
+            // Collapse toggle — only when row has children
+            if hasChildren {
+                Button(action: onToggleCollapse) {
+                    Image(systemName: item.isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.quaternary)
+                        .frame(width: 28, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                Spacer().frame(width: 28)
+            }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
         .contentShape(Rectangle())
     }
 }
@@ -242,7 +377,7 @@ struct OutlineTextField: UIViewRepresentable {
 
     func makeUIView(context: Context) -> BackspaceAwareTextField {
         let field = BackspaceAwareTextField()
-        field.font = UIFont.monospacedSystemFont(ofSize: 17, weight: .regular)
+        field.font = UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
         field.autocorrectionType = .no
         field.autocapitalizationType = .none
         field.spellCheckingType = .no
@@ -255,7 +390,6 @@ struct OutlineTextField: UIViewRepresentable {
             context.coordinator.parent.onUnindent()
         }
 
-        // Accessory toolbar — explicit frame height so it sits above keyboard with breathing room
         let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 52))
         bar.barTintColor = UIColor.secondarySystemBackground
         bar.isTranslucent = false
@@ -285,21 +419,18 @@ struct OutlineTextField: UIViewRepresentable {
         context.coordinator.parent = self
         field.onBackspaceAtStart = { context.coordinator.parent.onUnindent() }
 
-        if field.text != text {
-            field.text = text
-        }
+        if field.text != text { field.text = text }
 
         if isChecked {
-            let attrs: [NSAttributedString.Key: Any] = [
+            field.defaultTextAttributes = [
                 .strikethroughStyle: NSUnderlineStyle.single.rawValue,
                 .foregroundColor: UIColor.tertiaryLabel,
-                .font: UIFont.monospacedSystemFont(ofSize: 17, weight: .regular)
+                .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
             ]
-            field.defaultTextAttributes = attrs
         } else {
             field.defaultTextAttributes = [
                 .foregroundColor: UIColor.label,
-                .font: UIFont.monospacedSystemFont(ofSize: 17, weight: .regular)
+                .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
             ]
         }
 
@@ -310,22 +441,16 @@ struct OutlineTextField: UIViewRepresentable {
         }
     }
 
-    // MARK: Coordinator
-
     class Coordinator: NSObject, UITextFieldDelegate {
         var parent: OutlineTextField
-
-        init(parent: OutlineTextField) {
-            self.parent = parent
-        }
+        init(parent: OutlineTextField) { self.parent = parent }
 
         func textField(_ textField: UITextField,
                        shouldChangeCharactersIn range: NSRange,
                        replacementString string: String) -> Bool {
             let current = textField.text ?? ""
             if let r = Range(range, in: current) {
-                let updated = current.replacingCharacters(in: r, with: string)
-                parent.text = updated
+                parent.text = current.replacingCharacters(in: r, with: string)
                 parent.onChange()
             }
             return true

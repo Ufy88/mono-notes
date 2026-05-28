@@ -19,6 +19,7 @@ struct ListItem: Identifiable, Codable, Equatable {
     var text: String = ""
     var checked: Bool = false
     var depth: Int = 0          // 0 = root, 1 = child, 2 = grandchild, …
+    var isCollapsed: Bool = false  // true = children hidden
 }
 
 // MARK: - File
@@ -26,18 +27,22 @@ struct ListItem: Identifiable, Codable, Equatable {
 struct FileItem: Identifiable, Codable {
     var id: UUID = UUID()
     var kind: ItemKind
+    var title: String = ""      // explicit title; empty = auto from first row / first line
     var body: String = ""
     var listItems: [ListItem] = []
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
 
+    /// Resolved display title (sidebar, drag preview)
     var displayTitle: String {
         if kind == .list {
+            if !title.trimmingCharacters(in: .whitespaces).isEmpty { return title }
             let first = listItems.first(where: { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty })
-            return first?.text ?? "Empty list"
+            return first?.text ?? "Untitled"
         }
+        if !title.trimmingCharacters(in: .whitespaces).isEmpty { return title }
         let first = body.split(separator: "\n", omittingEmptySubsequences: true).first
-        guard let line = first else { return "Empty note" }
+        guard let line = first else { return "Untitled" }
         let s = String(line)
         return s.count > 60 ? String(s.prefix(60)) + "…" : s
     }
@@ -60,8 +65,42 @@ struct FileItem: Identifiable, Codable {
         if kind == .note {
             return body.lowercased().contains(q)
         } else {
-            return listItems.contains { $0.text.lowercased().contains(q) }
+            return title.lowercased().contains(q) ||
+                   listItems.contains { $0.text.lowercased().contains(q) }
         }
+    }
+
+    // MARK: - Collapse helpers
+
+    /// Returns the set of item IDs that should be visible given current collapsed states.
+    func visibleItemIDs() -> Set<UUID> {
+        var hidden = Set<UUID>()
+        var collapsedAncestorDepth: Int? = nil
+
+        for item in listItems {
+            if let cap = collapsedAncestorDepth {
+                if item.depth > cap {
+                    hidden.insert(item.id)
+                    continue
+                } else {
+                    collapsedAncestorDepth = nil
+                }
+            }
+            if item.isCollapsed && hasChildren(after: item) {
+                collapsedAncestorDepth = item.depth
+            }
+        }
+        return Set(listItems.map(\.id)).subtracting(hidden)
+    }
+
+    /// True if at least one item after `item` has depth > item.depth (before a same-or-lower depth item)
+    func hasChildren(after item: ListItem) -> Bool {
+        guard let idx = listItems.firstIndex(where: { $0.id == item.id }) else { return false }
+        for i in (idx + 1) ..< listItems.count {
+            if listItems[i].depth > item.depth { return true }
+            if listItems[i].depth <= item.depth { break }
+        }
+        return false
     }
 }
 
