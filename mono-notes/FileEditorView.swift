@@ -1,10 +1,35 @@
 import SwiftUI
 import UIKit
+import Combine
+
+// MARK: - Keyboard visibility helper
+
+final class KeyboardObserver: ObservableObject {
+    @Published var isVisible: Bool = false
+    private var cancellables = Set<AnyCancellable>()
+
+    init() {
+        NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.isVisible = true }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.isVisible = false }
+            .store(in: &cancellables)
+    }
+
+    func dismiss() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
+    }
+}
 
 // MARK: - FileEditorView
 
 struct FileEditorView: View {
     @EnvironmentObject var store: AppStore
+    @StateObject private var keyboard = KeyboardObserver()
 
     let initialFile: FileItem
     let tab: AppTab
@@ -21,16 +46,48 @@ struct FileEditorView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            toolbar
-            Divider()
-            if file.kind == .note {
-                noteEditor
-            } else {
-                listEditor
+        ZStack(alignment: .bottomTrailing) {
+            VStack(spacing: 0) {
+                toolbar
+                Divider()
+                if file.kind == .note {
+                    noteEditor
+                } else {
+                    listEditor
+                }
+            }
+            .background(Color(.systemBackground))
+
+            // Show-keyboard FAB — only when keyboard hidden
+            if !keyboard.isVisible {
+                Button {
+                    // re-focus last active field
+                    if file.kind == .note {
+                        textFocused = true
+                    } else if let id = focusedItemID {
+                        // trigger re-focus by toggling
+                        let tmp = focusedItemID
+                        focusedItemID = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = tmp }
+                        _ = id
+                    } else {
+                        focusedItemID = file.listItems.first(where: { !$0.isSeparator })?.id
+                    }
+                } label: {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(10)
+                        .background(Color(.secondarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+                }
+                .padding(.trailing, 16)
+                .padding(.bottom, 16)
+                .transition(.opacity)
             }
         }
-        .background(Color(.systemBackground))
+        .animation(.easeInOut(duration: 0.18), value: keyboard.isVisible)
         .onAppear {
             file = store.findFile(id: initialFile.id) ?? initialFile
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
@@ -41,7 +98,7 @@ struct FileEditorView: View {
                         let item = addNewItem(after: nil)
                         focusedItemID = item.id
                     } else {
-                        focusedItemID = file.listItems.first?.id
+                        focusedItemID = file.listItems.first(where: { !$0.isSeparator })?.id
                     }
                 }
             }
@@ -87,6 +144,8 @@ struct FileEditorView: View {
         .padding(.top, 4)
         .scrollContentBackground(.hidden)
         .background(Color(.systemBackground))
+        // inject dismiss-only accessory for notes
+        .onAppear { injectNoteAccessory() }
     }
 
     // MARK: - List editor
@@ -95,7 +154,6 @@ struct FileEditorView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
 
-                // ── Title field ──
                 TitleTextField(
                     text: Binding(
                         get: { file.title },
@@ -105,9 +163,8 @@ struct FileEditorView: View {
                     requestFocus: $titleFocused,
                     onReturn: {
                         titleFocused = false
-                        focusedItemID = file.listItems.isEmpty
-                            ? addNewItem(after: nil).id
-                            : file.listItems.first?.id
+                        focusedItemID = file.listItems.first(where: { !$0.isSeparator })?.id
+                            ?? addNewItem(after: nil).id
                     }
                 )
                 .padding(.horizontal, 16)
@@ -116,60 +173,76 @@ struct FileEditorView: View {
 
                 Divider().padding(.horizontal, 16).padding(.bottom, 4)
 
-                // ── Rows ──
                 let visible = file.visibleItemIDs()
                 ForEach(file.listItems.indices, id: \.self) { idx in
                     let item = file.listItems[idx]
                     if visible.contains(item.id) {
-                        OutlineItemRow(
-                            item: $file.listItems[idx],
-                            hasChildren: file.hasChildren(after: item),
-                            isActive: focusedItemID == item.id,
-                            onFocus: { focusedItemID = item.id },
-                            onEnter: {
-                                let current = file.listItems[idx]
-                                if current.text.isEmpty {
-                                    if current.depth > 0 {
+                        if item.isSeparator {
+                            SeparatorRow(
+                                blockCollapsed: item.blockCollapsed,
+                                preview: file.blockPreview(before: item.id),
+                                onToggle: {
+                                    file.listItems[idx].blockCollapsed.toggle()
+                                    save()
+                                }
+                            )
+                        } else {
+                            OutlineItemRow(
+                                item: $file.listItems[idx],
+                                hasChildren: file.hasChildren(after: item),
+                                isActive: focusedItemID == item.id,
+                                isList: true,
+                                keyboardVisible: keyboard.isVisible,
+                                onFocus: { focusedItemID = item.id },
+                                onEnter: {
+                                    let current = file.listItems[idx]
+                                    if current.text.isEmpty, current.depth > 0 {
                                         file.listItems[idx].depth -= 1
                                         save()
-                                    }
-                                } else {
-                                    let newItem = addNewItem(after: current.id)
-                                    save()
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                        focusedItemID = newItem.id
-                                    }
-                                }
-                            },
-                            onIndent: {
-                                file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4)
-                                save()
-                            },
-                            onUnindent: {
-                                if file.listItems[idx].depth > 0 {
-                                    file.listItems[idx].depth -= 1
-                                    save()
-                                } else if file.listItems[idx].text.isEmpty {
-                                    let prevVisible = prevVisibleID(before: idx, visible: visible)
-                                    file.listItems.remove(at: idx)
-                                    save()
-                                    if let pid = prevVisible {
+                                    } else {
+                                        let newItem = addNewItem(after: current.id)
+                                        save()
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                            focusedItemID = pid
+                                            focusedItemID = newItem.id
                                         }
                                     }
-                                }
-                            },
-                            onCheck: {
-                                file.listItems[idx].checked.toggle()
-                                save()
-                            },
-                            onToggleCollapse: {
-                                file.listItems[idx].isCollapsed.toggle()
-                                save()
-                            },
-                            onChange: { save() }
-                        )
+                                },
+                                onIndent: {
+                                    file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4)
+                                    save()
+                                },
+                                onUnindent: {
+                                    if file.listItems[idx].depth > 0 {
+                                        file.listItems[idx].depth -= 1
+                                        save()
+                                    } else if file.listItems[idx].text.isEmpty {
+                                        let prevVisible = prevVisibleID(before: idx, visible: visible)
+                                        file.listItems.remove(at: idx)
+                                        save()
+                                        if let pid = prevVisible {
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                                focusedItemID = pid
+                                            }
+                                        }
+                                    }
+                                },
+                                onCheck: {
+                                    file.listItems[idx].checked.toggle()
+                                    save()
+                                },
+                                onToggleCollapse: {
+                                    file.listItems[idx].isCollapsed.toggle()
+                                    save()
+                                },
+                                onInsertSeparator: {
+                                    insertSeparator(after: idx)
+                                },
+                                onDismissKeyboard: {
+                                    keyboard.dismiss()
+                                },
+                                onChange: { save() }
+                            )
+                        }
                     }
                 }
             }
@@ -193,10 +266,27 @@ struct FileEditorView: View {
         return item
     }
 
+    private func insertSeparator(after idx: Int) {
+        // Insert separator after current row, then a blank row after the separator
+        var sep = ListItem()
+        sep.isSeparator = true
+        sep.depth = 0
+        file.listItems.insert(sep, at: idx + 1)
+        var blank = ListItem()
+        blank.depth = 0
+        file.listItems.insert(blank, at: idx + 2)
+        save()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            focusedItemID = blank.id
+        }
+    }
+
     private func prevVisibleID(before idx: Int, visible: Set<UUID>) -> UUID? {
         guard idx > 0 else { return nil }
         for i in stride(from: idx - 1, through: 0, by: -1) {
-            if visible.contains(file.listItems[i].id) { return file.listItems[i].id }
+            if visible.contains(file.listItems[i].id) && !file.listItems[i].isSeparator {
+                return file.listItems[i].id
+            }
         }
         return nil
     }
@@ -208,20 +298,70 @@ struct FileEditorView: View {
 
     private var wordCountLabel: String {
         let words = file.body.split { $0.isWhitespace }.count
-        let chars = file.body.count
-        return "\(words)w \(chars)c"
+        return "\(words)w \(file.body.count)c"
     }
 
     private var checkCountLabel: String {
-        let done = file.listItems.filter(\.checked).count
-        let total = file.listItems.count
-        return "\(done)/\(total)"
+        let items = file.listItems.filter { !$0.isSeparator }
+        return "\(items.filter(\.checked).count)/\(items.count)"
+    }
+
+    // Inject a minimal accessory bar (dismiss only) for the note TextEditor
+    private func injectNoteAccessory() {
+        // We can't easily attach UIToolbar to SwiftUI TextEditor without UIViewRepresentable.
+        // Instead we rely on the FAB button for keyboard dismiss in notes.
+        // Nothing to inject here — kept as extension point.
+    }
+}
+
+// MARK: - SeparatorRow
+
+struct SeparatorRow: View {
+    let blockCollapsed: Bool
+    let preview: String
+    let onToggle: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if blockCollapsed {
+                // show preview of collapsed block
+                HStack(spacing: 6) {
+                    Text(preview)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button(action: onToggle) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.quaternary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
+            }
+
+            HStack(spacing: 8) {
+                Rectangle()
+                    .fill(Color(.separator))
+                    .frame(height: 0.5)
+                Button(action: onToggle) {
+                    Image(systemName: blockCollapsed ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.quaternary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.leading, 20)
+            .padding(.trailing, 12)
+            .padding(.vertical, 4)
+        }
     }
 }
 
 // MARK: - TitleTextField
-// requestFocus is a one-shot signal: setting it true causes becomeFirstResponder.
-// Focus is NEVER resigned from updateUIView — only from onReturn or user tap elsewhere.
 
 struct TitleTextField: UIViewRepresentable {
     @Binding var text: String
@@ -241,66 +381,102 @@ struct TitleTextField: UIViewRepresentable {
         field.delegate = context.coordinator
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Accessory: dismiss only (no indent buttons for title)
+        field.inputAccessoryView = makeDismissBar(target: context.coordinator,
+                                                  action: #selector(Coordinator.tappedDismiss),
+                                                  isList: false,
+                                                  separatorTarget: nil,
+                                                  separatorAction: nil)
         context.coordinator.field = field
         return field
     }
 
     func updateUIView(_ field: UITextField, context: Context) {
         context.coordinator.parent = self
-
-        // Only sync text when it differs AND field is not being actively edited
-        // (avoids clobbering cursor position mid-typing)
-        if field.text != text && !field.isFirstResponder {
-            field.text = text
-        }
-
+        if field.text != text && !field.isFirstResponder { field.text = text }
         field.attributedPlaceholder = NSAttributedString(
             string: placeholder,
-            attributes: [
-                .foregroundColor: UIColor.tertiaryLabel,
-                .font: UIFont.monospacedSystemFont(ofSize: 20, weight: .semibold)
-            ]
-        )
-
-        // requestFocus = true → grab focus, then reset the flag
+            attributes: [.foregroundColor: UIColor.tertiaryLabel,
+                         .font: UIFont.monospacedSystemFont(ofSize: 20, weight: .semibold)])
         if requestFocus && !field.isFirstResponder {
-            DispatchQueue.main.async {
-                field.becomeFirstResponder()
-                self.requestFocus = false
-            }
+            DispatchQueue.main.async { field.becomeFirstResponder(); self.requestFocus = false }
         }
-        // Never call resignFirstResponder here
     }
 
     class Coordinator: NSObject, UITextFieldDelegate {
         var parent: TitleTextField
         weak var field: UITextField?
-
         init(parent: TitleTextField) { self.parent = parent }
 
-        func textField(_ textField: UITextField,
-                       shouldChangeCharactersIn range: NSRange,
-                       replacementString string: String) -> Bool {
-            let current = textField.text ?? ""
-            if let r = Range(range, in: current) {
-                parent.text = current.replacingCharacters(in: r, with: string)
-            }
+        func textField(_ tf: UITextField, shouldChangeCharactersIn r: NSRange, replacementString s: String) -> Bool {
+            let cur = tf.text ?? ""
+            if let range = Range(r, in: cur) { parent.text = cur.replacingCharacters(in: range, with: s) }
             return true
         }
-
-        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-            textField.resignFirstResponder()
-            parent.onReturn()
-            return false
+        func textFieldShouldReturn(_ tf: UITextField) -> Bool {
+            tf.resignFirstResponder(); parent.onReturn(); return false
         }
+        @objc func tappedDismiss() { field?.resignFirstResponder() }
     }
+}
+
+// MARK: - Shared accessory bar factory
+
+func makeDismissBar(
+    target: AnyObject,
+    action: Selector,
+    isList: Bool,
+    separatorTarget: AnyObject?,
+    separatorAction: Selector?
+) -> UIToolbar {
+    let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
+    bar.barTintColor = UIColor.secondarySystemBackground
+    bar.isTranslucent = false
+
+    var items: [UIBarButtonItem] = []
+
+    if isList {
+        let unindent = UIBarButtonItem(
+            image: UIImage(systemName: "arrow.left.to.line")?.withConfiguration(
+                UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)),
+            style: .plain, target: target,
+            action: NSSelectorFromString("tappedUnindent"))
+        let gap = UIBarButtonItem(barButtonSystemItem: .fixedSpace, target: nil, action: nil)
+        gap.width = 4
+        let indent = UIBarButtonItem(
+            image: UIImage(systemName: "arrow.right.to.line")?.withConfiguration(
+                UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)),
+            style: .plain, target: target,
+            action: NSSelectorFromString("tappedIndent"))
+
+        let gap2 = UIBarButtonItem(barButtonSystemItem: .fixedSpace, target: nil, action: nil)
+        gap2.width = 12
+
+        let sepBtn = UIBarButtonItem(
+            image: UIImage(systemName: "minus")?.withConfiguration(
+                UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)),
+            style: .plain, target: separatorTarget,
+            action: separatorAction)
+
+        items += [unindent, gap, indent, gap2, sepBtn]
+    }
+
+    let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
+    let dismiss = UIBarButtonItem(
+        image: UIImage(systemName: "keyboard.chevron.compact.down")?.withConfiguration(
+            UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)),
+        style: .plain, target: target, action: action)
+
+    items += [flex, dismiss]
+    bar.items = items
+    return bar
 }
 
 // MARK: - FileItem auto-title helper
 
 extension FileItem {
     var autoTitle: String {
-        let first = listItems.first(where: { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty })
+        let first = listItems.first(where: { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty && !$0.isSeparator })
         return first?.text ?? "Untitled"
     }
 }
@@ -311,12 +487,16 @@ struct OutlineItemRow: View {
     @Binding var item: ListItem
     let hasChildren: Bool
     let isActive: Bool
+    let isList: Bool
+    let keyboardVisible: Bool
     let onFocus: () -> Void
     let onEnter: () -> Void
     let onIndent: () -> Void
     let onUnindent: () -> Void
     let onCheck: () -> Void
     let onToggleCollapse: () -> Void
+    let onInsertSeparator: () -> Void
+    let onDismissKeyboard: () -> Void
     let onChange: () -> Void
 
     var body: some View {
@@ -324,7 +504,6 @@ struct OutlineItemRow: View {
             if item.depth > 0 {
                 Spacer().frame(width: CGFloat(item.depth) * 20)
             }
-
             Text("\u{2022}")
                 .font(.system(size: 15, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
@@ -335,10 +514,13 @@ struct OutlineItemRow: View {
                 text: $item.text,
                 isActive: isActive,
                 isChecked: item.checked,
+                isList: isList,
                 onFocus: onFocus,
                 onEnter: onEnter,
                 onIndent: onIndent,
                 onUnindent: onUnindent,
+                onInsertSeparator: onInsertSeparator,
+                onDismissKeyboard: onDismissKeyboard,
                 onChange: onChange
             )
             .frame(minHeight: 32)
@@ -362,21 +544,22 @@ struct OutlineItemRow: View {
     }
 }
 
-// MARK: - OutlineTextField (UIViewRepresentable)
+// MARK: - OutlineTextField
 
 struct OutlineTextField: UIViewRepresentable {
     @Binding var text: String
     let isActive: Bool
     let isChecked: Bool
+    let isList: Bool
     let onFocus: () -> Void
     let onEnter: () -> Void
     let onIndent: () -> Void
     let onUnindent: () -> Void
+    let onInsertSeparator: () -> Void
+    let onDismissKeyboard: () -> Void
     let onChange: () -> Void
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     func makeUIView(context: Context) -> BackspaceAwareTextField {
         let field = BackspaceAwareTextField()
@@ -388,46 +571,30 @@ struct OutlineTextField: UIViewRepresentable {
         field.delegate = context.coordinator
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.onBackspaceAtStart = { context.coordinator.parent.onUnindent() }
 
-        field.onBackspaceAtStart = {
-            context.coordinator.parent.onUnindent()
-        }
-
-        let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 52))
-        bar.barTintColor = UIColor.secondarySystemBackground
-        bar.isTranslucent = false
-        let unindentBtn = UIBarButtonItem(image: UIImage(systemName: "arrow.left.to.line"),
-                                          style: .plain, target: context.coordinator,
-                                          action: #selector(Coordinator.tappedUnindent))
-        let indentBtn = UIBarButtonItem(image: UIImage(systemName: "arrow.right.to.line"),
-                                        style: .plain, target: context.coordinator,
-                                        action: #selector(Coordinator.tappedIndent))
-        let gap = UIBarButtonItem(barButtonSystemItem: .fixedSpace, target: nil, action: nil)
-        gap.width = 20
-        let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-        bar.items = [unindentBtn, gap, indentBtn, flex]
-        field.inputAccessoryView = bar
+        field.inputAccessoryView = makeDismissBar(
+            target: context.coordinator,
+            action: #selector(Coordinator.tappedDismiss),
+            isList: isList,
+            separatorTarget: context.coordinator,
+            separatorAction: #selector(Coordinator.tappedSeparator)
+        )
         return field
     }
 
     func updateUIView(_ field: BackspaceAwareTextField, context: Context) {
         context.coordinator.parent = self
         field.onBackspaceAtStart = { context.coordinator.parent.onUnindent() }
-
         if field.text != text { field.text = text }
 
-        if isChecked {
-            field.defaultTextAttributes = [
-                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                .foregroundColor: UIColor.tertiaryLabel,
-                .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
-            ]
-        } else {
-            field.defaultTextAttributes = [
-                .foregroundColor: UIColor.label,
-                .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
-            ]
-        }
+        let attrs: [NSAttributedString.Key: Any] = isChecked
+            ? [.strikethroughStyle: NSUnderlineStyle.single.rawValue,
+               .foregroundColor: UIColor.tertiaryLabel,
+               .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)]
+            : [.foregroundColor: UIColor.label,
+               .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)]
+        field.defaultTextAttributes = attrs
 
         if isActive && !field.isFirstResponder {
             DispatchQueue.main.async { field.becomeFirstResponder() }
@@ -440,28 +607,21 @@ struct OutlineTextField: UIViewRepresentable {
         var parent: OutlineTextField
         init(parent: OutlineTextField) { self.parent = parent }
 
-        func textField(_ textField: UITextField,
-                       shouldChangeCharactersIn range: NSRange,
-                       replacementString string: String) -> Bool {
-            let current = textField.text ?? ""
-            if let r = Range(range, in: current) {
-                parent.text = current.replacingCharacters(in: r, with: string)
+        func textField(_ tf: UITextField, shouldChangeCharactersIn r: NSRange, replacementString s: String) -> Bool {
+            let cur = tf.text ?? ""
+            if let range = Range(r, in: cur) {
+                parent.text = cur.replacingCharacters(in: range, with: s)
                 parent.onChange()
             }
             return true
         }
-
-        func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-            parent.onEnter()
-            return false
-        }
-
-        func textFieldDidBeginEditing(_ textField: UITextField) {
-            parent.onFocus()
-        }
+        func textFieldShouldReturn(_ tf: UITextField) -> Bool { parent.onEnter(); return false }
+        func textFieldDidBeginEditing(_ tf: UITextField) { parent.onFocus() }
 
         @objc func tappedIndent() { parent.onIndent() }
         @objc func tappedUnindent() { parent.onUnindent() }
+        @objc func tappedDismiss() { parent.onDismissKeyboard() }
+        @objc func tappedSeparator() { parent.onInsertSeparator() }
     }
 }
 
@@ -471,15 +631,14 @@ class BackspaceAwareTextField: UITextField {
     var onBackspaceAtStart: (() -> Void)?
 
     override func deleteBackward() {
-        let cursorAtStart: Bool = {
-            guard let range = selectedTextRange else { return false }
-            return range.isEmpty && offset(from: beginningOfDocument, to: range.start) == 0
+        let atStart: Bool = {
+            guard let r = selectedTextRange else { return false }
+            return r.isEmpty && offset(from: beginningOfDocument, to: r.start) == 0
         }()
-        let isEmpty = (text ?? "").isEmpty
-
-        if cursorAtStart || isEmpty {
+        let empty = (text ?? "").isEmpty
+        if atStart || empty {
             onBackspaceAtStart?()
-            if isEmpty { return }
+            if empty { return }
         }
         super.deleteBackward()
     }
