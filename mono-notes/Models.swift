@@ -22,8 +22,6 @@ struct ListItem: Identifiable, Codable, Equatable {
     var isCollapsed: Bool = false
     /// true = this item is a horizontal separator line, not a text row
     var isSeparator: Bool = false
-    /// when isSeparator=true: collapse all items in the block ABOVE this separator
-    var blockCollapsed: Bool = false
 }
 
 // MARK: - File
@@ -69,30 +67,9 @@ struct FileItem: Identifiable, Codable {
     // MARK: - Visibility
 
     /// Returns set of IDs that should be rendered.
-    /// Two collapse mechanisms:
-    /// 1. Outline collapse (isCollapsed on parent row hides deeper children)
-    /// 2. Block collapse (blockCollapsed on separator hides all items in block above it)
+    /// Outline collapse: isCollapsed on a parent row hides deeper children.
     func visibleItemIDs() -> Set<UUID> {
-        // Step 1: find which items are block-collapsed.
-        // A block is defined as all non-separator items between two separators (or start/separator).
-        // The separator that ENDS a block owns the blockCollapsed flag.
-        var blockHidden = Set<UUID>()
-        var currentBlockItems: [UUID] = []
-
-        for item in listItems {
-            if item.isSeparator {
-                if item.blockCollapsed {
-                    for uid in currentBlockItems { blockHidden.insert(uid) }
-                }
-                currentBlockItems = []
-            } else {
-                currentBlockItems.append(item.id)
-            }
-        }
-        // last block (after last separator or whole list if no separators) has no separator to collapse it
-
-        // Step 2: outline collapse (existing logic), but skip separator items from depth logic
-        var outlineHidden = Set<UUID>()
+        var hidden = Set<UUID>()
         var collapsedAncestorDepth: Int? = nil
 
         for item in listItems {
@@ -102,7 +79,7 @@ struct FileItem: Identifiable, Codable {
             }
             if let cap = collapsedAncestorDepth {
                 if item.depth > cap {
-                    outlineHidden.insert(item.id)
+                    hidden.insert(item.id)
                     continue
                 } else {
                     collapsedAncestorDepth = nil
@@ -113,8 +90,7 @@ struct FileItem: Identifiable, Codable {
             }
         }
 
-        let allIDs = Set(listItems.map(\.id))
-        return allIDs.subtracting(blockHidden).subtracting(outlineHidden)
+        return Set(listItems.map(\.id)).subtracting(hidden)
     }
 
     func hasChildren(after item: ListItem) -> Bool {
@@ -126,27 +102,6 @@ struct FileItem: Identifiable, Codable {
             if listItems[i].depth <= item.depth { break }
         }
         return false
-    }
-
-    /// Preview text for a collapsed block (first non-empty item's text)
-    func blockPreview(before separatorID: UUID) -> String {
-        guard let sepIdx = listItems.firstIndex(where: { $0.id == separatorID }) else { return "" }
-        // find start of block (previous separator or 0)
-        var blockStart = 0
-        for i in stride(from: sepIdx - 1, through: 0, by: -1) {
-            if listItems[i].isSeparator { blockStart = i + 1; break }
-        }
-        for i in blockStart ..< sepIdx {
-            let t = listItems[i].text.trimmingCharacters(in: .whitespaces)
-            if !t.isEmpty { return t.count > 60 ? String(t.prefix(60)) + "…" : t }
-        }
-        return "empty"
-    }
-
-    /// True if a separator exists anywhere before the given index
-    func hasBlockAbove(separatorIndex: Int) -> Bool {
-        // block above a separator is always there (even if empty)
-        return separatorIndex >= 0
     }
 }
 

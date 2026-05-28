@@ -32,8 +32,7 @@ final class KeyboardObserver: ObservableObject {
 extension Notification.Name {
     static let focusNoteEditor  = Notification.Name("focusNoteEditor")
     static let sidebarWillOpen  = Notification.Name("sidebarWillOpen")
-    // Payload: userInfo["id"] = UUID  — tells the matching GrowingTextView to becomeFirstResponder
-    // without going through SwiftUI state (avoids keyboard flicker).
+    // Payload: userInfo["id"] = UUID
     static let focusItem        = Notification.Name("focusItem")
 }
 
@@ -212,12 +211,7 @@ struct FileEditorView: View {
                 ForEach($file.listItems, id: \.id) { $item in
                     if visible.contains(item.id) {
                         if item.isSeparator {
-                            let idx = file.listItems.firstIndex(where: { $0.id == item.id }) ?? 0
-                            SeparatorRow(
-                                blockCollapsed: item.blockCollapsed,
-                                preview: file.blockPreview(before: item.id),
-                                onToggle: { file.listItems[idx].blockCollapsed.toggle(); save() }
-                            )
+                            SeparatorRow()
                         } else {
                             let idx = file.listItems.firstIndex(where: { $0.id == item.id }) ?? 0
                             OutlineItemRow(
@@ -228,6 +222,7 @@ struct FileEditorView: View {
                                 onEnter: { handleEnter(at: idx) },
                                 onIndent: { file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save() },
                                 onUnindent: { handleUnindent(at: idx, visible: visible) },
+                                onDeleteSeparatorAbove: { handleDeleteSeparatorAbove(at: idx) },
                                 onCheck: { file.listItems[idx].checked.toggle(); save() },
                                 onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
                                 onInsertSeparator: { insertSeparator(after: idx) },
@@ -268,7 +263,6 @@ struct FileEditorView: View {
         }
         let newItem = addNewItem(after: current.id)
         save()
-        // New row — it doesn't exist yet in the view hierarchy, so we must go through focusedItemID.
         focusedItemID = newItem.id
     }
 
@@ -279,24 +273,28 @@ struct FileEditorView: View {
         }
         guard file.listItems[idx].text.isEmpty else { return }
 
-        // Find the previous visible non-separator item BEFORE removing from the array,
-        // so the index is still valid.
         let prevID = prevVisibleID(before: idx, visible: visible)
         file.listItems.remove(at: idx)
         save()
 
         if let pid = prevID {
-            // Stay on the same focusedItemID if it's already that row — the UITextView
-            // for that row is still alive and first-responder status hasn't changed.
-            // Post a direct notification so GrowingTextView can grab focus without
-            // SwiftUI tearing down and rebuilding anything (no keyboard flicker).
             focusedItemID = pid
-            NotificationCenter.default.post(
-                name: .focusItem,
-                object: nil,
-                userInfo: ["id": pid]
-            )
+            NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": pid])
         }
+    }
+
+    /// Called when the user presses backspace at position 0 of an empty row
+    /// and the item immediately above is a separator — delete that separator.
+    private func handleDeleteSeparatorAbove(at idx: Int) {
+        guard idx > 0 else { return }
+        let above = file.listItems[idx - 1]
+        guard above.isSeparator else { return }
+        file.listItems.remove(at: idx - 1)
+        save()
+        // Row index shifted by -1 after removal; focus stays on the same logical item.
+        let itemID = file.listItems[idx - 1 < file.listItems.count ? idx - 1 : file.listItems.count - 1].id
+        focusedItemID = itemID
+        NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": itemID])
     }
 
     @discardableResult
@@ -386,36 +384,15 @@ struct NoteEditorWrapper: UIViewRepresentable {
 }
 
 // MARK: - SeparatorRow
+/// A simple horizontal rule — no collapse behaviour.
 struct SeparatorRow: View {
-    let blockCollapsed: Bool
-    let preview: String
-    let onToggle: () -> Void
-
     var body: some View {
-        VStack(spacing: 0) {
-            if blockCollapsed {
-                HStack(spacing: 6) {
-                    Text(preview)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.tertiary).lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button(action: onToggle) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.quaternary)
-                    }.buttonStyle(.plain)
-                }
-                .padding(.horizontal, 20).padding(.vertical, 6)
-            }
-            HStack(spacing: 8) {
-                Rectangle().fill(Color(.separator)).frame(height: 0.5)
-                Button(action: onToggle) {
-                    Image(systemName: blockCollapsed ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.quaternary)
-                        .frame(width: 24, height: 24)
-                }.buttonStyle(.plain)
-            }
-            .padding(.leading, 20).padding(.trailing, 12).padding(.vertical, 4)
-        }
+        Rectangle()
+            .fill(Color(.separator))
+            .frame(maxWidth: .infinity)
+            .frame(height: 0.5)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
     }
 }
 
@@ -484,6 +461,7 @@ struct OutlineItemRow: View {
     let onEnter: () -> Void
     let onIndent: () -> Void
     let onUnindent: () -> Void
+    let onDeleteSeparatorAbove: () -> Void
     let onCheck: () -> Void
     let onToggleCollapse: () -> Void
     let onInsertSeparator: () -> Void
@@ -518,6 +496,7 @@ struct OutlineItemRow: View {
                 onEnter: onEnter,
                 onIndent: onIndent,
                 onUnindent: onUnindent,
+                onDeleteSeparatorAbove: onDeleteSeparatorAbove,
                 onInsertSeparator: onInsertSeparator,
                 onDismissKeyboard: onDismissKeyboard,
                 onChange: onChange,
@@ -554,6 +533,7 @@ struct OutlineTextView: UIViewRepresentable {
     let onEnter: () -> Void
     let onIndent: () -> Void
     let onUnindent: () -> Void
+    let onDeleteSeparatorAbove: () -> Void
     let onInsertSeparator: () -> Void
     let onDismissKeyboard: () -> Void
     let onChange: () -> Void
@@ -586,7 +566,6 @@ struct OutlineTextView: UIViewRepresentable {
                       dismissSel: #selector(Coordinator.tappedDismiss))
         tv.inputAccessoryView = bar
 
-        // Register for direct-focus notification (used when deleting a bullet row).
         NotificationCenter.default.addObserver(
             context.coordinator,
             selector: #selector(Coordinator.handleFocusItem(_:)),
@@ -617,9 +596,6 @@ struct OutlineTextView: UIViewRepresentable {
         let newAttr = NSAttributedString(string: tv.text, attributes: attrs)
         if tv.attributedText != newAttr { tv.attributedText = newAttr }
 
-        // Only call becomeFirstResponder when SwiftUI explicitly marks this row active.
-        // Do NOT resign here — that's what causes the flicker. Resigning is only done
-        // via explicit user action (dismiss button, sidebar open).
         if isActive && !tv.isFirstResponder {
             DispatchQueue.main.async { tv.becomeFirstResponder() }
         }
@@ -639,8 +615,6 @@ struct OutlineTextView: UIViewRepresentable {
         }
         func textViewDidBeginEditing(_ tv: UITextView) { parent.onFocus() }
 
-        // Called by .focusItem notification. Grabs focus directly on the UITextView
-        // that matches our itemID — no SwiftUI state change, no keyboard dismiss.
         @objc func handleFocusItem(_ note: Notification) {
             guard let id = note.userInfo?["id"] as? UUID,
                   id == parent.itemID,
@@ -664,7 +638,6 @@ class GrowingTextView: UITextView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        // Store weak ref so Coordinator.handleFocusItem can reach us.
         coordinator?.textView = self
     }
 
@@ -685,7 +658,18 @@ class GrowingTextView: UITextView {
             guard let r = selectedTextRange else { return false }
             return r.isEmpty && offset(from: beginningOfDocument, to: r.start) == 0
         }()
-        if atStart { coordinator?.parent.onUnindent() }
+
+        if atStart && text.isEmpty {
+            // Empty row at position 0: try to delete separator above, then unindent/remove row.
+            coordinator?.parent.onDeleteSeparatorAbove()
+            coordinator?.parent.onUnindent()
+            return
+        }
+
+        if atStart && !text.isEmpty {
+            coordinator?.parent.onUnindent()
+        }
+
         if !text.isEmpty { super.deleteBackward() }
     }
 }
