@@ -32,7 +32,6 @@ final class KeyboardObserver: ObservableObject {
 extension Notification.Name {
     static let focusNoteEditor  = Notification.Name("focusNoteEditor")
     static let sidebarWillOpen  = Notification.Name("sidebarWillOpen")
-    // Payload: userInfo["id"] = UUID
     static let focusItem        = Notification.Name("focusItem")
 }
 
@@ -222,6 +221,7 @@ struct FileEditorView: View {
                                 onEnter: { handleEnter(at: idx) },
                                 onIndent: { file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save() },
                                 onUnindent: { handleUnindent(at: idx, visible: visible) },
+                                // Returns true if separator was deleted — caller must NOT call onUnindent after.
                                 onDeleteSeparatorAbove: { handleDeleteSeparatorAbove(at: idx) },
                                 onCheck: { file.listItems[idx].checked.toggle(); save() },
                                 onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
@@ -267,6 +267,7 @@ struct FileEditorView: View {
     }
 
     private func handleUnindent(at idx: Int, visible: Set<UUID>) {
+        guard idx < file.listItems.count else { return }
         if file.listItems[idx].depth > 0 {
             file.listItems[idx].depth -= 1; save()
             return
@@ -283,18 +284,22 @@ struct FileEditorView: View {
         }
     }
 
-    /// Called when the user presses backspace at position 0 of an empty row
-    /// and the item immediately above is a separator — delete that separator.
-    private func handleDeleteSeparatorAbove(at idx: Int) {
-        guard idx > 0 else { return }
-        let above = file.listItems[idx - 1]
-        guard above.isSeparator else { return }
+    /// Deletes the separator immediately above `idx` if one exists.
+    /// Returns `true` when a separator was actually deleted — the caller
+    /// must skip any further deletion logic in that case.
+    @discardableResult
+    private func handleDeleteSeparatorAbove(at idx: Int) -> Bool {
+        guard idx > 0, idx < file.listItems.count else { return false }
+        guard file.listItems[idx - 1].isSeparator else { return false }
+
+        // Capture the item's own ID before removing the separator (index shifts by -1 after).
+        let itemID = file.listItems[idx].id
         file.listItems.remove(at: idx - 1)
         save()
-        // Row index shifted by -1 after removal; focus stays on the same logical item.
-        let itemID = file.listItems[idx - 1 < file.listItems.count ? idx - 1 : file.listItems.count - 1].id
+
         focusedItemID = itemID
         NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": itemID])
+        return true
     }
 
     @discardableResult
@@ -384,7 +389,6 @@ struct NoteEditorWrapper: UIViewRepresentable {
 }
 
 // MARK: - SeparatorRow
-/// A simple horizontal rule — no collapse behaviour.
 struct SeparatorRow: View {
     var body: some View {
         Rectangle()
@@ -461,7 +465,8 @@ struct OutlineItemRow: View {
     let onEnter: () -> Void
     let onIndent: () -> Void
     let onUnindent: () -> Void
-    let onDeleteSeparatorAbove: () -> Void
+    /// Returns true if a separator was deleted. Caller must not invoke onUnindent when true.
+    let onDeleteSeparatorAbove: () -> Bool
     let onCheck: () -> Void
     let onToggleCollapse: () -> Void
     let onInsertSeparator: () -> Void
@@ -533,7 +538,7 @@ struct OutlineTextView: UIViewRepresentable {
     let onEnter: () -> Void
     let onIndent: () -> Void
     let onUnindent: () -> Void
-    let onDeleteSeparatorAbove: () -> Void
+    let onDeleteSeparatorAbove: () -> Bool
     let onInsertSeparator: () -> Void
     let onDismissKeyboard: () -> Void
     let onChange: () -> Void
@@ -660,9 +665,11 @@ class GrowingTextView: UITextView {
         }()
 
         if atStart && text.isEmpty {
-            // Empty row at position 0: try to delete separator above, then unindent/remove row.
-            coordinator?.parent.onDeleteSeparatorAbove()
-            coordinator?.parent.onUnindent()
+            // If a separator was just above and got deleted — stop here, don't also delete the row.
+            let separatorDeleted = coordinator?.parent.onDeleteSeparatorAbove() ?? false
+            if !separatorDeleted {
+                coordinator?.parent.onUnindent()
+            }
             return
         }
 
