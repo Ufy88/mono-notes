@@ -227,6 +227,7 @@ struct SidebarChildView: View {
     @Binding var draggingID: UUID?
 
     @State private var showDeleteFolderAlert = false
+    @State private var showDeleteFileAlert = false
     @State private var showRenameAlert = false
     @State private var localRename = ""
     @State private var autoExpandTimer: Timer? = nil
@@ -239,6 +240,7 @@ struct SidebarChildView: View {
         }
     }
 
+    // MARK: Folder row
     @ViewBuilder
     private func folderRow(_ folder: Folder) -> some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -255,8 +257,31 @@ struct SidebarChildView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Spacer()
+                // Ellipsis menu
+                Menu {
+                    Button {
+                        localRename = folder.name
+                        showRenameAlert = true
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    Button(role: .destructive) {
+                        if folder.children.isEmpty { store.delete(id: folder.id, tab: tab) }
+                        else { showDeleteFolderAlert = true }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.quaternary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             .padding(.leading, CGFloat(depth) * 16 + 12)
+            .padding(.trailing, 6)
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 6)
@@ -265,7 +290,6 @@ struct SidebarChildView: View {
             )
             .contentShape(Rectangle())
             .onTapGesture { store.toggleFolder(id: folder.id, tab: tab) }
-            .onLongPressGesture { localRename = folder.name; showRenameAlert = true }
             .dropDestination(for: DragPayload.self) { items, _ in
                 guard let payload = items.first else { return false }
                 autoExpandTimer?.invalidate()
@@ -283,12 +307,6 @@ struct SidebarChildView: View {
                     }
                 } else { autoExpandTimer?.invalidate() }
             }
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button(role: .destructive) {
-                    if folder.children.isEmpty { store.delete(id: folder.id, tab: tab) }
-                    else { showDeleteFolderAlert = true }
-                } label: { Label("Delete", systemImage: "trash") }
-            }
             .draggable(DragPayload(id: folder.id, isFolder: true)) {
                 dragPreview(label: folder.name, icon: "folder").onAppear { draggingID = folder.id }
             }
@@ -303,7 +321,7 @@ struct SidebarChildView: View {
                 }
             }
         }
-        .alert("Rename Folder", isPresented: $showRenameAlert) {
+        .alert("Rename", isPresented: $showRenameAlert) {
             TextField("Folder name", text: $localRename)
             Button("Save") { if !localRename.isEmpty { store.renameFolder(id: folder.id, name: localRename, tab: tab) } }
             Button("Cancel", role: .cancel) {}
@@ -314,6 +332,7 @@ struct SidebarChildView: View {
         } message: { Text("This will delete everything inside.") }
     }
 
+    // MARK: File row
     @ViewBuilder
     private func fileRow(_ file: FileItem) -> some View {
         HStack(spacing: 6) {
@@ -331,8 +350,24 @@ struct SidebarChildView: View {
             Text(file.dateLabel)
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.quaternary)
+            // Ellipsis menu
+            Menu {
+                Button(role: .destructive) {
+                    showDeleteFileAlert = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.quaternary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
         .padding(.leading, CGFloat(depth) * 16 + 12)
+        .padding(.trailing, 6)
         .padding(.vertical, 9)
         .background(selectedFile?.id == file.id ? Color(.systemFill) : .clear)
         .contentShape(Rectangle())
@@ -354,6 +389,13 @@ struct SidebarChildView: View {
         }
         .opacity(draggingID == file.id ? 0.4 : 1.0)
         .animation(.easeInOut(duration: 0.15), value: draggingID)
+        .alert("Delete \"\(file.displayTitle)\"?", isPresented: $showDeleteFileAlert) {
+            Button("Delete", role: .destructive) {
+                store.delete(id: file.id, tab: tab)
+                if selectedFile?.id == file.id { selectedFile = nil }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private func dragPreview(label: String, icon: String) -> some View {
