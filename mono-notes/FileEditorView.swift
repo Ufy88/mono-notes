@@ -149,7 +149,6 @@ struct FileEditorView: View {
         }
         .animation(.easeInOut(duration: 0.18), value: keyboard.isVisible)
         .onAppear { file = store.findFile(id: initialFile.id) ?? initialFile }
-        // FIX keyboard dismiss: listen for sidebar-opened notification
         .onReceive(NotificationCenter.default.publisher(for: .sidebarWillOpen)) { _ in
             keyboardDismissed = true
             focusedItemID = nil
@@ -262,7 +261,6 @@ struct FileEditorView: View {
         focusedItemID = newItem.id
     }
 
-    // MARK: - Unindent / delete
     private func handleUnindent(at idx: Int, visible: Set<UUID>) {
         if file.listItems[idx].depth > 0 {
             file.listItems[idx].depth -= 1; save()
@@ -457,6 +455,15 @@ struct TitleTextField: UIViewRepresentable {
 }
 
 // MARK: - OutlineItemRow
+//
+// Key insight: UIViewRepresentable inside LazyVStack does not automatically resize
+// vertically when its UITextView content grows. SwiftUI never re-queries
+// intrinsicContentSize after the first layout pass in a lazy container.
+//
+// Solution: measure the required height ourselves (sizeThatFits) and store it
+// in @State. OutlineTextView calls onHeightChange whenever the text changes.
+// The row uses .frame(height: measuredHeight) so SwiftUI allocates real space.
+
 struct OutlineItemRow: View {
     @Binding var item: ListItem
     let hasChildren: Bool
@@ -471,22 +478,29 @@ struct OutlineItemRow: View {
     let onDismissKeyboard: () -> Void
     let onChange: () -> Void
 
+    // Measured height of the UITextView portion. Default 32 covers one empty line.
+    @State private var textHeight: CGFloat = 32
+
+    // Fixed horizontal space consumed by indent + bullet + chevron.
+    // OutlineTextView gets the remainder.
+    private var indentWidth: CGFloat { CGFloat(item.depth) * 20 }
+    private let bulletWidth: CGFloat = 22
+    private let chevronWidth: CGFloat = 28
+    private let rowPadding: CGFloat = 32 // 16 * 2
+
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            // indent spacer
             if item.depth > 0 {
-                Color.clear.frame(width: CGFloat(item.depth) * 20, height: 1)
+                Color.clear.frame(width: indentWidth, height: 1)
             }
 
-            // bullet
             Text("\u{2022}")
                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
-                .frame(width: 22, alignment: .center)
+                .frame(width: bulletWidth, alignment: .center)
                 .padding(.top, 3)
                 .onTapGesture { onCheck() }
 
-            // text field — must fill remaining width so text wraps
             OutlineTextView(
                 text: $item.text,
                 isActive: isActive,
@@ -497,19 +511,24 @@ struct OutlineItemRow: View {
                 onUnindent: onUnindent,
                 onInsertSeparator: onInsertSeparator,
                 onDismissKeyboard: onDismissKeyboard,
-                onChange: onChange
+                onChange: onChange,
+                onHeightChange: { h in
+                    if abs(h - textHeight) > 0.5 { textHeight = h }
+                }
             )
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Give the text view a fixed height that we control via @State.
+            // maxWidth:.infinity makes it fill whatever the HStack leaves after
+            // indent + bullet + chevron.
+            .frame(maxWidth: .infinity, minHeight: textHeight, maxHeight: textHeight)
 
-            // collapse chevron
             if hasChildren {
                 Button(action: onToggleCollapse) {
                     Image(systemName: item.isCollapsed ? "chevron.right" : "chevron.down")
                         .font(.system(size: 10, weight: .medium)).foregroundStyle(.quaternary)
-                        .frame(width: 28, height: 28).contentShape(Rectangle())
+                        .frame(width: chevronWidth, height: 28).contentShape(Rectangle())
                 }.buttonStyle(.plain).padding(.top, 1)
             } else {
-                Color.clear.frame(width: 28, height: 1)
+                Color.clear.frame(width: chevronWidth, height: 1)
             }
         }
         .padding(.horizontal, 16)
@@ -531,6 +550,7 @@ struct OutlineTextView: UIViewRepresentable {
     let onInsertSeparator: () -> Void
     let onDismissKeyboard: () -> Void
     let onChange: () -> Void
+    let onHeightChange: (CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -545,7 +565,6 @@ struct OutlineTextView: UIViewRepresentable {
         tv.textContainerInset = UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
         tv.textContainer.lineFragmentPadding = 0
         tv.textContainer.widthTracksTextView = true
-        tv.textContainer.heightTracksTextView = false
         tv.returnKeyType = .next
         tv.delegate = context.coordinator
         tv.coordinator = context.coordinator
@@ -585,7 +604,6 @@ struct OutlineTextView: UIViewRepresentable {
         if isActive && !tv.isFirstResponder {
             DispatchQueue.main.async { tv.becomeFirstResponder() }
         }
-        // never resign here — RootView handles global dismiss via notification
     }
 
     class Coordinator: NSObject, UITextViewDelegate {
@@ -613,22 +631,18 @@ struct OutlineTextView: UIViewRepresentable {
 class GrowingTextView: UITextView {
     weak var coordinator: OutlineTextView.Coordinator?
 
-    // FIX text wrap: return the size UITextView actually needs based on its text container.
-    // Without this override SwiftUI gets UIView.noIntrinsicMetric and gives the view 0 height.
-    override var intrinsicContentSize: CGSize {
-        // Use the real layout manager size — works after layoutSubviews sets the container width.
-        let size = layoutManager.usedRect(for: textContainer)
-        let h = size.height + textContainerInset.top + textContainerInset.bottom
-        return CGSize(width: UIView.noIntrinsicMetric, height: max(h, 32))
-    }
-
     override func layoutSubviews() {
         super.layoutSubviews()
-        // Notify SwiftUI of height change whenever the layout changes.
-        if bounds.width != textContainer.size.width {
-            invalidateIntrinsicContentSize()
-        }
-        invalidateIntrinsicContentSize()
+        reportHeight()
+    }
+
+    // Compute the height the text actually needs at the current width,
+    // then fire onHeightChange so SwiftUI can update the .frame.
+    private func reportHeight() {
+        guard bounds.width > 0 else { return }
+        let fittingSize = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
+        let h = max(fittingSize.height, 32)
+        coordinator?.parent.onHeightChange(h)
     }
 
     override func deleteBackward() {
