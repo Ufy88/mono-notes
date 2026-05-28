@@ -102,16 +102,12 @@ struct FileEditorView: View {
                         set: { file.title = $0; save() }
                     ),
                     placeholder: file.autoTitle,
-                    isFocused: $titleFocused,
+                    requestFocus: $titleFocused,
                     onReturn: {
-                        // Move focus to first list item
-                        if file.listItems.isEmpty {
-                            let item = addNewItem(after: nil)
-                            focusedItemID = item.id
-                        } else {
-                            focusedItemID = file.listItems.first?.id
-                        }
                         titleFocused = false
+                        focusedItemID = file.listItems.isEmpty
+                            ? addNewItem(after: nil).id
+                            : file.listItems.first?.id
                     }
                 )
                 .padding(.horizontal, 16)
@@ -224,11 +220,13 @@ struct FileEditorView: View {
 }
 
 // MARK: - TitleTextField
+// requestFocus is a one-shot signal: setting it true causes becomeFirstResponder.
+// Focus is NEVER resigned from updateUIView — only from onReturn or user tap elsewhere.
 
 struct TitleTextField: UIViewRepresentable {
     @Binding var text: String
     let placeholder: String
-    @Binding var isFocused: Bool
+    @Binding var requestFocus: Bool
     let onReturn: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -243,26 +241,41 @@ struct TitleTextField: UIViewRepresentable {
         field.delegate = context.coordinator
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        context.coordinator.field = field
         return field
     }
 
     func updateUIView(_ field: UITextField, context: Context) {
         context.coordinator.parent = self
-        if field.text != text { field.text = text }
+
+        // Only sync text when it differs AND field is not being actively edited
+        // (avoids clobbering cursor position mid-typing)
+        if field.text != text && !field.isFirstResponder {
+            field.text = text
+        }
+
         field.attributedPlaceholder = NSAttributedString(
             string: placeholder,
-            attributes: [.foregroundColor: UIColor.tertiaryLabel,
-                         .font: UIFont.monospacedSystemFont(ofSize: 20, weight: .semibold)]
+            attributes: [
+                .foregroundColor: UIColor.tertiaryLabel,
+                .font: UIFont.monospacedSystemFont(ofSize: 20, weight: .semibold)
+            ]
         )
-        if isFocused && !field.isFirstResponder {
-            DispatchQueue.main.async { field.becomeFirstResponder() }
-        } else if !isFocused && field.isFirstResponder {
-            field.resignFirstResponder()
+
+        // requestFocus = true → grab focus, then reset the flag
+        if requestFocus && !field.isFirstResponder {
+            DispatchQueue.main.async {
+                field.becomeFirstResponder()
+                self.requestFocus = false
+            }
         }
+        // Never call resignFirstResponder here
     }
 
     class Coordinator: NSObject, UITextFieldDelegate {
         var parent: TitleTextField
+        weak var field: UITextField?
+
         init(parent: TitleTextField) { self.parent = parent }
 
         func textField(_ textField: UITextField,
@@ -276,16 +289,9 @@ struct TitleTextField: UIViewRepresentable {
         }
 
         func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+            textField.resignFirstResponder()
             parent.onReturn()
             return false
-        }
-
-        func textFieldDidBeginEditing(_ textField: UITextField) {
-            parent.isFocused = true
-        }
-
-        func textFieldDidEndEditing(_ textField: UITextField) {
-            parent.isFocused = false
         }
     }
 }
@@ -319,14 +325,12 @@ struct OutlineItemRow: View {
                 Spacer().frame(width: CGFloat(item.depth) * 20)
             }
 
-            // Bullet
             Text("\u{2022}")
                 .font(.system(size: 15, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
                 .frame(width: 22, alignment: .center)
                 .onTapGesture { onCheck() }
 
-            // Text field
             OutlineTextField(
                 text: $item.text,
                 isActive: isActive,
@@ -339,7 +343,6 @@ struct OutlineItemRow: View {
             )
             .frame(minHeight: 32)
 
-            // Collapse toggle — only when row has children
             if hasChildren {
                 Button(action: onToggleCollapse) {
                     Image(systemName: item.isCollapsed ? "chevron.right" : "chevron.down")
@@ -393,24 +396,16 @@ struct OutlineTextField: UIViewRepresentable {
         let bar = UIToolbar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 52))
         bar.barTintColor = UIColor.secondarySystemBackground
         bar.isTranslucent = false
-
-        let unindentBtn = UIBarButtonItem(
-            image: UIImage(systemName: "arrow.left.to.line"),
-            style: .plain,
-            target: context.coordinator,
-            action: #selector(Coordinator.tappedUnindent)
-        )
-        let indentBtn = UIBarButtonItem(
-            image: UIImage(systemName: "arrow.right.to.line"),
-            style: .plain,
-            target: context.coordinator,
-            action: #selector(Coordinator.tappedIndent)
-        )
+        let unindentBtn = UIBarButtonItem(image: UIImage(systemName: "arrow.left.to.line"),
+                                          style: .plain, target: context.coordinator,
+                                          action: #selector(Coordinator.tappedUnindent))
+        let indentBtn = UIBarButtonItem(image: UIImage(systemName: "arrow.right.to.line"),
+                                        style: .plain, target: context.coordinator,
+                                        action: #selector(Coordinator.tappedIndent))
         let gap = UIBarButtonItem(barButtonSystemItem: .fixedSpace, target: nil, action: nil)
         gap.width = 20
         let flex = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
         bar.items = [unindentBtn, gap, indentBtn, flex]
-
         field.inputAccessoryView = bar
         return field
     }
