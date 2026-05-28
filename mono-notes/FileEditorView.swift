@@ -100,6 +100,56 @@ final class AccessoryBar: UIView {
     }
 }
 
+// MARK: - ListDropZone
+// iter-2: pure UI, no array mutation.
+// Shows a thin accent line when a ListItemPayload hovers over it.
+// `insertAfterIndex` = the listItems index after which the drop would land.
+// -1 means "before the very first item".
+// onDrop currently only prints to console — mutation comes in iter-3.
+
+struct ListDropZone: View {
+    let insertAfterIndex: Int
+    let onDrop: (UUID) -> Void   // will be wired to real logic in iter-3
+
+    @State private var isTargeted = false
+
+    var body: some View {
+        ZStack {
+            // Transparent hit area — tall enough to be easy to land on during drag
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: isTargeted ? 20 : 10)
+
+            // Visual indicator line
+            if isTargeted {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(height: 1.5)
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                }
+                .padding(.horizontal, 16)
+                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.12), value: isTargeted)
+        .dropDestination(for: ListItemPayload.self) { items, _ in
+            guard let payload = items.first else { return false }
+            // iter-2: log only, no mutation
+            print("[drop-zone] would insert \(payload.id) after index \(insertAfterIndex)")
+            onDrop(payload.id)
+            return true
+        } isTargeted: { targeted in
+            isTargeted = targeted
+        }
+    }
+}
+
 // MARK: - FileEditorView
 
 struct FileEditorView: View {
@@ -207,6 +257,9 @@ struct FileEditorView: View {
 
                 let visible = file.visibleItemIDs()
 
+                // Drop zone BEFORE the first item (insertAfterIndex = -1)
+                ListDropZone(insertAfterIndex: -1) { _ in }
+
                 ForEach($file.listItems, id: \.id) { $item in
                     if visible.contains(item.id) {
                         if item.isSeparator {
@@ -221,7 +274,6 @@ struct FileEditorView: View {
                                 onEnter: { handleEnter(at: idx) },
                                 onIndent: { file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save() },
                                 onUnindent: { handleUnindent(at: idx, visible: visible) },
-                                // Returns true if separator was deleted — caller must NOT call onUnindent after.
                                 onDeleteSeparatorAbove: { handleDeleteSeparatorAbove(at: idx) },
                                 onCheck: { file.listItems[idx].checked.toggle(); save() },
                                 onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
@@ -229,6 +281,8 @@ struct FileEditorView: View {
                                 onDismissKeyboard: { keyboardDismissed = true; KeyboardObserver.dismiss() },
                                 onChange: { save() }
                             )
+                            // Drop zone AFTER each non-separator visible item
+                            ListDropZone(insertAfterIndex: idx) { _ in }
                         }
                     }
                 }
@@ -284,19 +338,13 @@ struct FileEditorView: View {
         }
     }
 
-    /// Deletes the separator immediately above `idx` if one exists.
-    /// Returns `true` when a separator was actually deleted — the caller
-    /// must skip any further deletion logic in that case.
     @discardableResult
     private func handleDeleteSeparatorAbove(at idx: Int) -> Bool {
         guard idx > 0, idx < file.listItems.count else { return false }
         guard file.listItems[idx - 1].isSeparator else { return false }
-
-        // Capture the item's own ID before removing the separator (index shifts by -1 after).
         let itemID = file.listItems[idx].id
         file.listItems.remove(at: idx - 1)
         save()
-
         focusedItemID = itemID
         NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": itemID])
         return true
@@ -465,7 +513,6 @@ struct OutlineItemRow: View {
     let onEnter: () -> Void
     let onIndent: () -> Void
     let onUnindent: () -> Void
-    /// Returns true if a separator was deleted. Caller must not invoke onUnindent when true.
     let onDeleteSeparatorAbove: () -> Bool
     let onCheck: () -> Void
     let onToggleCollapse: () -> Void
@@ -524,16 +571,12 @@ struct OutlineItemRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-        // MARK: Drag — iter-1
-        // Long-press activates drag. The payload carries only id + text (no depth/checked —
-        // those are resolved from the live array in later iterations).
         .draggable(ListItemPayload(id: item.id, text: item.text)) {
-            // Drag preview: bullet + first 40 chars of text, monospaced, no background
             HStack(spacing: 6) {
                 Text("\u{2022}")
                     .font(.system(size: 13, weight: .bold, design: .monospaced))
                     .foregroundStyle(.tertiary)
-                Text(item.text.prefix(40).isEmpty ? "…" : String(item.text.prefix(40)))
+                Text(item.text.prefix(40).isEmpty ? "\u{2026}" : String(item.text.prefix(40)))
                     .font(.system(size: 13, weight: .medium, design: .monospaced))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
@@ -684,7 +727,6 @@ class GrowingTextView: UITextView {
         }()
 
         if atStart && text.isEmpty {
-            // If a separator was just above and got deleted — stop here, don't also delete the row.
             let separatorDeleted = coordinator?.parent.onDeleteSeparatorAbove() ?? false
             if !separatorDeleted {
                 coordinator?.parent.onUnindent()
