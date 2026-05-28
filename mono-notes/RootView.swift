@@ -32,14 +32,6 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.22), value: sidebarOpen)
-        .onChange(of: sidebarOpen) { _, open in
-            if open {
-                UIApplication.shared.sendAction(
-                    #selector(UIResponder.resignFirstResponder),
-                    to: nil, from: nil, for: nil
-                )
-            }
-        }
         .onAppear { restoreLastOpened() }
     }
 
@@ -63,7 +55,7 @@ struct RootView: View {
     private var editorNavBar: some View {
         HStack {
             Button {
-                withAnimation(.easeInOut(duration: 0.22)) { sidebarOpen.toggle() }
+                openSidebar()
             } label: {
                 Image(systemName: "sidebar.left")
                     .font(.system(size: 18))
@@ -74,6 +66,18 @@ struct RootView: View {
         }
         .frame(height: 48)
         .background(Color(.systemBackground).opacity(0.95))
+    }
+
+    private func openSidebar() {
+        // Notify editor to dismiss keyboard and clear focus BEFORE sidebar animates in.
+        // UIApplication.resignFirstResponder alone is unreliable when SwiftUI state changes
+        // happen in the same runloop tick as the animation.
+        NotificationCenter.default.post(name: .sidebarWillOpen, object: nil)
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil, from: nil, for: nil
+        )
+        withAnimation(.easeInOut(duration: 0.22)) { sidebarOpen.toggle() }
     }
 
     private func restoreLastOpened() {
