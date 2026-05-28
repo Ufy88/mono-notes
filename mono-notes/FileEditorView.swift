@@ -100,56 +100,6 @@ final class AccessoryBar: UIView {
     }
 }
 
-// MARK: - ListDropZone
-// Height = 0 at rest (invisible, no layout impact).
-// Expands to 20pt and shows accent line only while a drag is hovering.
-// Color.clear does NOT receive drop events on iOS — using opacity(0.001) rectangle instead.
-
-struct ListDropZone: View {
-    let insertAfterIndex: Int
-    let onDrop: (UUID) -> Void
-
-    @State private var isTargeted = false
-
-    var body: some View {
-        ZStack {
-            // Hit area: nearly-transparent but rendered, so iOS hit-tests it.
-            // Height 0 at rest keeps layout intact; expands during drag hover.
-            Rectangle()
-                .fill(Color.primary.opacity(0.001))
-                .frame(maxWidth: .infinity)
-                .frame(height: isTargeted ? 20 : 0)
-                .clipped()
-
-            if isTargeted {
-                HStack(spacing: 0) {
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 6, height: 6)
-                        .padding(.leading, 16)
-                    Rectangle()
-                        .fill(Color.accentColor)
-                        .frame(height: 1.5)
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 6, height: 6)
-                        .padding(.trailing, 16)
-                }
-                .transition(.opacity)
-            }
-        }
-        .animation(.easeOut(duration: 0.1), value: isTargeted)
-        .dropDestination(for: ListItemPayload.self) { items, _ in
-            guard let payload = items.first else { return false }
-            print("[drop-zone] would insert \(payload.id) after index \(insertAfterIndex)")
-            onDrop(payload.id)
-            return true
-        } isTargeted: { targeted in
-            isTargeted = targeted
-        }
-    }
-}
-
 // MARK: - FileEditorView
 
 struct FileEditorView: View {
@@ -238,8 +188,9 @@ struct FileEditorView: View {
 
     // MARK: - List editor
     private var listEditor: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+        List {
+            // Title
+            Section {
                 TitleTextField(
                     text: Binding(get: { file.title }, set: { file.title = $0; save() }),
                     placeholder: file.autoTitle,
@@ -251,58 +202,66 @@ struct FileEditorView: View {
                     },
                     onDismiss: { keyboardDismissed = true; KeyboardObserver.dismiss() }
                 )
-                .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8)
+                .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 8, trailing: 16))
+                .listRowSeparator(.hidden)
+            }
 
-                Divider().padding(.horizontal, 16).padding(.bottom, 4)
-
-                let visible = file.visibleItemIDs()
-
-                ListDropZone(insertAfterIndex: -1) { _ in }
-
-                ForEach($file.listItems, id: \.id) { $item in
-                    if visible.contains(item.id) {
-                        if item.isSeparator {
-                            SeparatorRow()
-                        } else {
-                            let idx = file.listItems.firstIndex(where: { $0.id == item.id }) ?? 0
-                            OutlineItemRow(
-                                item: $item,
-                                hasChildren: file.hasChildren(after: item),
-                                isActive: focusedItemID == item.id && !keyboardDismissed,
-                                onFocus: { keyboardDismissed = false; focusedItemID = item.id },
-                                onEnter: { handleEnter(at: idx) },
-                                onIndent: { file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save() },
-                                onUnindent: { handleUnindent(at: idx, visible: visible) },
-                                onDeleteSeparatorAbove: { handleDeleteSeparatorAbove(at: idx) },
-                                onCheck: { file.listItems[idx].checked.toggle(); save() },
-                                onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
-                                onInsertSeparator: { insertSeparator(after: idx) },
-                                onDismissKeyboard: { keyboardDismissed = true; KeyboardObserver.dismiss() },
-                                onChange: { save() }
-                            )
-                            ListDropZone(insertAfterIndex: idx) { _ in }
-                        }
+            // Items
+            let visible = file.visibleItemIDs()
+            ForEach($file.listItems, id: \.id) { $item in
+                if visible.contains(item.id) {
+                    if item.isSeparator {
+                        SeparatorRow()
+                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                            .listRowSeparator(.hidden)
+                    } else {
+                        let idx = file.listItems.firstIndex(where: { $0.id == item.id }) ?? 0
+                        OutlineItemRow(
+                            item: $item,
+                            hasChildren: file.hasChildren(after: item),
+                            isActive: focusedItemID == item.id && !keyboardDismissed,
+                            onFocus: { keyboardDismissed = false; focusedItemID = item.id },
+                            onEnter: { handleEnter(at: idx) },
+                            onIndent: { file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save() },
+                            onUnindent: { handleUnindent(at: idx, visible: visible) },
+                            onDeleteSeparatorAbove: { handleDeleteSeparatorAbove(at: idx) },
+                            onCheck: { file.listItems[idx].checked.toggle(); save() },
+                            onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
+                            onInsertSeparator: { insertSeparator(after: idx) },
+                            onDismissKeyboard: { keyboardDismissed = true; KeyboardObserver.dismiss() },
+                            onChange: { save() }
+                        )
+                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                        .listRowSeparator(.hidden)
                     }
                 }
-
-                Color.clear
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 300)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        keyboardDismissed = false
-                        let lastID = file.listItems.last(where: { !$0.isSeparator })?.id
-                        if let id = lastID {
-                            focusedItemID = nil
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = id }
-                        } else {
-                            let item = addNewItem(after: nil); save()
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = item.id }
-                        }
-                    }
             }
-            .padding(.bottom, 40)
+            .onMove { from, to in
+                file.listItems.move(fromOffsets: from, toOffset: to)
+                save()
+            }
+
+            // Bottom tap area
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: 300)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    keyboardDismissed = false
+                    let lastID = file.listItems.last(where: { !$0.isSeparator })?.id
+                    if let id = lastID {
+                        focusedItemID = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = id }
+                    } else {
+                        let item = addNewItem(after: nil); save()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = item.id }
+                    }
+                }
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
         }
+        .listStyle(.plain)
+        .environment(\.editMode, .constant(.active))
     }
 
     // MARK: - Enter handling
@@ -567,21 +526,6 @@ struct OutlineItemRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-        .draggable(ListItemPayload(id: item.id, text: item.text)) {
-            HStack(spacing: 6) {
-                Text("\u{2022}")
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                Text(item.text.prefix(40).isEmpty ? "\u{2026}" : String(item.text.prefix(40)))
-                    .font(.system(size: 13, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color(.secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
     }
 }
 
