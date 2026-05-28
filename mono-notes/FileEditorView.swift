@@ -27,6 +27,16 @@ final class KeyboardObserver: ObservableObject {
     }
 }
 
+// MARK: - Notifications
+
+extension Notification.Name {
+    static let focusNoteEditor  = Notification.Name("focusNoteEditor")
+    static let sidebarWillOpen  = Notification.Name("sidebarWillOpen")
+    // Payload: userInfo["id"] = UUID  — tells the matching GrowingTextView to becomeFirstResponder
+    // without going through SwiftUI state (avoids keyboard flicker).
+    static let focusItem        = Notification.Name("focusItem")
+}
+
 // MARK: - Flat accessory bar
 
 final class AccessoryBar: UIView {
@@ -258,18 +268,34 @@ struct FileEditorView: View {
         }
         let newItem = addNewItem(after: current.id)
         save()
+        // New row — it doesn't exist yet in the view hierarchy, so we must go through focusedItemID.
         focusedItemID = newItem.id
     }
 
     private func handleUnindent(at idx: Int, visible: Set<UUID>) {
         if file.listItems[idx].depth > 0 {
             file.listItems[idx].depth -= 1; save()
-        } else if file.listItems[idx].text.isEmpty {
-            let prev = prevVisibleID(before: idx, visible: visible)
-            file.listItems.remove(at: idx); save()
-            if let pid = prev {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = pid }
-            }
+            return
+        }
+        guard file.listItems[idx].text.isEmpty else { return }
+
+        // Find the previous visible non-separator item BEFORE removing from the array,
+        // so the index is still valid.
+        let prevID = prevVisibleID(before: idx, visible: visible)
+        file.listItems.remove(at: idx)
+        save()
+
+        if let pid = prevID {
+            // Stay on the same focusedItemID if it's already that row — the UITextView
+            // for that row is still alive and first-responder status hasn't changed.
+            // Post a direct notification so GrowingTextView can grab focus without
+            // SwiftUI tearing down and rebuilding anything (no keyboard flicker).
+            focusedItemID = pid
+            NotificationCenter.default.post(
+                name: .focusItem,
+                object: nil,
+                userInfo: ["id": pid]
+            )
         }
     }
 
@@ -314,12 +340,6 @@ struct FileEditorView: View {
         let items = file.listItems.filter { !$0.isSeparator }
         return "\(items.filter(\.checked).count)/\(items.count)"
     }
-}
-
-// MARK: - Notifications
-extension Notification.Name {
-    static let focusNoteEditor = Notification.Name("focusNoteEditor")
-    static let sidebarWillOpen = Notification.Name("sidebarWillOpen")
 }
 
 // MARK: - NoteEditorWrapper
@@ -455,14 +475,6 @@ struct TitleTextField: UIViewRepresentable {
 }
 
 // MARK: - OutlineItemRow
-//
-// Key insight: UIViewRepresentable inside LazyVStack does not automatically resize
-// vertically when its UITextView content grows. SwiftUI never re-queries
-// intrinsicContentSize after the first layout pass in a lazy container.
-//
-// Solution: measure the required height ourselves (sizeThatFits) and store it
-// in @State. OutlineTextView calls onHeightChange whenever the text changes.
-// The row uses .frame(height: measuredHeight) so SwiftUI allocates real space.
 
 struct OutlineItemRow: View {
     @Binding var item: ListItem
@@ -478,15 +490,11 @@ struct OutlineItemRow: View {
     let onDismissKeyboard: () -> Void
     let onChange: () -> Void
 
-    // Measured height of the UITextView portion. Default 32 covers one empty line.
     @State private var textHeight: CGFloat = 32
 
-    // Fixed horizontal space consumed by indent + bullet + chevron.
-    // OutlineTextView gets the remainder.
     private var indentWidth: CGFloat { CGFloat(item.depth) * 20 }
     private let bulletWidth: CGFloat = 22
     private let chevronWidth: CGFloat = 28
-    private let rowPadding: CGFloat = 32 // 16 * 2
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -503,6 +511,7 @@ struct OutlineItemRow: View {
 
             OutlineTextView(
                 text: $item.text,
+                itemID: item.id,
                 isActive: isActive,
                 isChecked: item.checked,
                 onFocus: onFocus,
@@ -516,9 +525,6 @@ struct OutlineItemRow: View {
                     if abs(h - textHeight) > 0.5 { textHeight = h }
                 }
             )
-            // Give the text view a fixed height that we control via @State.
-            // maxWidth:.infinity makes it fill whatever the HStack leaves after
-            // indent + bullet + chevron.
             .frame(maxWidth: .infinity, minHeight: textHeight, maxHeight: textHeight)
 
             if hasChildren {
@@ -541,6 +547,7 @@ struct OutlineItemRow: View {
 
 struct OutlineTextView: UIViewRepresentable {
     @Binding var text: String
+    let itemID: UUID
     let isActive: Bool
     let isChecked: Bool
     let onFocus: () -> Void
@@ -578,6 +585,15 @@ struct OutlineTextView: UIViewRepresentable {
                       separatorSel: #selector(Coordinator.tappedSeparator),
                       dismissSel: #selector(Coordinator.tappedDismiss))
         tv.inputAccessoryView = bar
+
+        // Register for direct-focus notification (used when deleting a bullet row).
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.handleFocusItem(_:)),
+            name: .focusItem,
+            object: nil
+        )
+
         return tv
     }
 
@@ -601,6 +617,9 @@ struct OutlineTextView: UIViewRepresentable {
         let newAttr = NSAttributedString(string: tv.text, attributes: attrs)
         if tv.attributedText != newAttr { tv.attributedText = newAttr }
 
+        // Only call becomeFirstResponder when SwiftUI explicitly marks this row active.
+        // Do NOT resign here — that's what causes the flicker. Resigning is only done
+        // via explicit user action (dismiss button, sidebar open).
         if isActive && !tv.isFirstResponder {
             DispatchQueue.main.async { tv.becomeFirstResponder() }
         }
@@ -608,6 +627,7 @@ struct OutlineTextView: UIViewRepresentable {
 
     class Coordinator: NSObject, UITextViewDelegate {
         var parent: OutlineTextView
+        weak var textView: GrowingTextView?
         init(parent: OutlineTextView) { self.parent = parent }
 
         func textView(_ tv: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
@@ -618,6 +638,17 @@ struct OutlineTextView: UIViewRepresentable {
             if parent.text != tv.text { parent.text = tv.text; parent.onChange() }
         }
         func textViewDidBeginEditing(_ tv: UITextView) { parent.onFocus() }
+
+        // Called by .focusItem notification. Grabs focus directly on the UITextView
+        // that matches our itemID — no SwiftUI state change, no keyboard dismiss.
+        @objc func handleFocusItem(_ note: Notification) {
+            guard let id = note.userInfo?["id"] as? UUID,
+                  id == parent.itemID,
+                  let tv = textView,
+                  !tv.isFirstResponder
+            else { return }
+            tv.becomeFirstResponder()
+        }
 
         @objc func tappedIndent() { parent.onIndent() }
         @objc func tappedUnindent() { parent.onUnindent() }
@@ -631,13 +662,17 @@ struct OutlineTextView: UIViewRepresentable {
 class GrowingTextView: UITextView {
     weak var coordinator: OutlineTextView.Coordinator?
 
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        // Store weak ref so Coordinator.handleFocusItem can reach us.
+        coordinator?.textView = self
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         reportHeight()
     }
 
-    // Compute the height the text actually needs at the current width,
-    // then fire onHeightChange so SwiftUI can update the .frame.
     private func reportHeight() {
         guard bounds.width > 0 else { return }
         let fittingSize = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
