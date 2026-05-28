@@ -149,6 +149,11 @@ struct FileEditorView: View {
         }
         .animation(.easeInOut(duration: 0.18), value: keyboard.isVisible)
         .onAppear { file = store.findFile(id: initialFile.id) ?? initialFile }
+        // FIX keyboard dismiss: listen for sidebar-opened notification
+        .onReceive(NotificationCenter.default.publisher(for: .sidebarWillOpen)) { _ in
+            keyboardDismissed = true
+            focusedItemID = nil
+        }
     }
 
     // MARK: - Toolbar
@@ -195,9 +200,6 @@ struct FileEditorView: View {
 
                 let visible = file.visibleItemIDs()
 
-                // FIX 1: iterate by item.id, not by index
-                // This prevents SwiftUI from destroying/recreating UITextView on list mutations,
-                // which caused the keyboard to flash on every Enter press.
                 ForEach($file.listItems, id: \.id) { $item in
                     if visible.contains(item.id) {
                         if item.isSeparator {
@@ -205,10 +207,7 @@ struct FileEditorView: View {
                             SeparatorRow(
                                 blockCollapsed: item.blockCollapsed,
                                 preview: file.blockPreview(before: item.id),
-                                onToggle: {
-                                    file.listItems[idx].blockCollapsed.toggle()
-                                    save()
-                                }
+                                onToggle: { file.listItems[idx].blockCollapsed.toggle(); save() }
                             )
                         } else {
                             let idx = file.listItems.firstIndex(where: { $0.id == item.id }) ?? 0
@@ -218,10 +217,7 @@ struct FileEditorView: View {
                                 isActive: focusedItemID == item.id && !keyboardDismissed,
                                 onFocus: { keyboardDismissed = false; focusedItemID = item.id },
                                 onEnter: { handleEnter(at: idx) },
-                                onIndent: {
-                                    file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4)
-                                    save()
-                                },
+                                onIndent: { file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save() },
                                 onUnindent: { handleUnindent(at: idx, visible: visible) },
                                 onCheck: { file.listItems[idx].checked.toggle(); save() },
                                 onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
@@ -257,23 +253,16 @@ struct FileEditorView: View {
     private func handleEnter(at idx: Int) {
         let current = file.listItems[idx]
         let isEmpty = current.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-
         if isEmpty {
-            if current.depth > 0 {
-                file.listItems[idx].depth -= 1
-                save()
-            }
+            if current.depth > 0 { file.listItems[idx].depth -= 1; save() }
             return
         }
-
         let newItem = addNewItem(after: current.id)
         save()
-        // FIX 1 cont: focusedItemID change does NOT recreate views because ForEach is keyed by id.
-        // The existing UITextView for the new row simply receives isActive=true in updateUIView.
         focusedItemID = newItem.id
     }
 
-    // MARK: - Backspace unindent / delete empty
+    // MARK: - Unindent / delete
     private func handleUnindent(at idx: Int, visible: Set<UUID>) {
         if file.listItems[idx].depth > 0 {
             file.listItems[idx].depth -= 1; save()
@@ -286,7 +275,6 @@ struct FileEditorView: View {
         }
     }
 
-    // MARK: - Helpers
     @discardableResult
     private func addNewItem(after id: UUID?) -> ListItem {
         var depth = 0
@@ -330,9 +318,10 @@ struct FileEditorView: View {
     }
 }
 
-// MARK: - Notification
+// MARK: - Notifications
 extension Notification.Name {
     static let focusNoteEditor = Notification.Name("focusNoteEditor")
+    static let sidebarWillOpen = Notification.Name("sidebarWillOpen")
 }
 
 // MARK: - NoteEditorWrapper
@@ -484,7 +473,12 @@ struct OutlineItemRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            if item.depth > 0 { Spacer().frame(width: CGFloat(item.depth) * 20) }
+            // indent spacer
+            if item.depth > 0 {
+                Color.clear.frame(width: CGFloat(item.depth) * 20, height: 1)
+            }
+
+            // bullet
             Text("\u{2022}")
                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
@@ -492,6 +486,7 @@ struct OutlineItemRow: View {
                 .padding(.top, 3)
                 .onTapGesture { onCheck() }
 
+            // text field — must fill remaining width so text wraps
             OutlineTextView(
                 text: $item.text,
                 isActive: isActive,
@@ -504,10 +499,9 @@ struct OutlineItemRow: View {
                 onDismissKeyboard: onDismissKeyboard,
                 onChange: onChange
             )
-            // FIX 3: min-width 0 so the HStack doesn't push OutlineTextView to grow unbounded.
-            // The actual width constraint is set inside OutlineTextView via layoutSubviews.
-            .frame(minWidth: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
+            // collapse chevron
             if hasChildren {
                 Button(action: onToggleCollapse) {
                     Image(systemName: item.isCollapsed ? "chevron.right" : "chevron.down")
@@ -515,7 +509,7 @@ struct OutlineItemRow: View {
                         .frame(width: 28, height: 28).contentShape(Rectangle())
                 }.buttonStyle(.plain).padding(.top, 1)
             } else {
-                Spacer().frame(width: 28)
+                Color.clear.frame(width: 28, height: 1)
             }
         }
         .padding(.horizontal, 16)
@@ -550,14 +544,11 @@ struct OutlineTextView: UIViewRepresentable {
         tv.backgroundColor = .clear
         tv.textContainerInset = UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
         tv.textContainer.lineFragmentPadding = 0
-        // FIX 3: tell the text container to track the view width so text wraps correctly
         tv.textContainer.widthTracksTextView = true
         tv.textContainer.heightTracksTextView = false
         tv.returnKeyType = .next
         tv.delegate = context.coordinator
         tv.coordinator = context.coordinator
-
-        // FIX 3: prevent horizontal compression resistance from overriding layout width
         tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tv.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
@@ -591,37 +582,23 @@ struct OutlineTextView: UIViewRepresentable {
         let newAttr = NSAttributedString(string: tv.text, attributes: attrs)
         if tv.attributedText != newAttr { tv.attributedText = newAttr }
 
-        // FIX 1: becomeFirstResponder only when truly needed — prevents keyboard flash.
-        // isActive changes only affect the specific row's UITextView, not all rows.
         if isActive && !tv.isFirstResponder {
             DispatchQueue.main.async { tv.becomeFirstResponder() }
-        } else if !isActive && tv.isFirstResponder {
-            // FIX 2: only resign if keyboard was explicitly dismissed (e.g. sidebar opened).
-            // Do NOT resign just because another row became active — that causes the flash.
-            // RootView already calls resignFirstResponder globally when sidebar opens.
         }
+        // never resign here — RootView handles global dismiss via notification
     }
 
     class Coordinator: NSObject, UITextViewDelegate {
         var parent: OutlineTextView
-
         init(parent: OutlineTextView) { self.parent = parent }
 
         func textView(_ tv: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
-            if text == "\n" {
-                parent.onEnter()
-                return false
-            }
+            if text == "\n" { parent.onEnter(); return false }
             return true
         }
-
         func textViewDidChange(_ tv: UITextView) {
-            if parent.text != tv.text {
-                parent.text = tv.text
-                parent.onChange()
-            }
+            if parent.text != tv.text { parent.text = tv.text; parent.onChange() }
         }
-
         func textViewDidBeginEditing(_ tv: UITextView) { parent.onFocus() }
 
         @objc func tappedIndent() { parent.onIndent() }
@@ -636,17 +613,31 @@ struct OutlineTextView: UIViewRepresentable {
 class GrowingTextView: UITextView {
     weak var coordinator: OutlineTextView.Coordinator?
 
+    // FIX text wrap: return the size UITextView actually needs based on its text container.
+    // Without this override SwiftUI gets UIView.noIntrinsicMetric and gives the view 0 height.
+    override var intrinsicContentSize: CGSize {
+        // Use the real layout manager size — works after layoutSubviews sets the container width.
+        let size = layoutManager.usedRect(for: textContainer)
+        let h = size.height + textContainerInset.top + textContainerInset.bottom
+        return CGSize(width: UIView.noIntrinsicMetric, height: max(h, 32))
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Notify SwiftUI of height change whenever the layout changes.
+        if bounds.width != textContainer.size.width {
+            invalidateIntrinsicContentSize()
+        }
+        invalidateIntrinsicContentSize()
+    }
+
     override func deleteBackward() {
         let atStart: Bool = {
             guard let r = selectedTextRange else { return false }
             return r.isEmpty && offset(from: beginningOfDocument, to: r.start) == 0
         }()
-        if atStart {
-            coordinator?.parent.onUnindent()
-        }
-        if !text.isEmpty {
-            super.deleteBackward()
-        }
+        if atStart { coordinator?.parent.onUnindent() }
+        if !text.isEmpty { super.deleteBackward() }
     }
 }
 
