@@ -187,9 +187,12 @@ struct FileEditorView: View {
     }
 
     // MARK: - List editor
+    // editMode is NOT set to .active — no handles shown.
+    // Reorder is triggered by long-press via UITableView.beginInteractiveMovementForItem(at:)
+    // injected through the ReorderProxy UIViewRepresentable below.
     private var listEditor: some View {
         List {
-            // Title
+            // Title row — not reorderable
             Section {
                 TitleTextField(
                     text: Binding(get: { file.title }, set: { file.title = $0; save() }),
@@ -204,6 +207,7 @@ struct FileEditorView: View {
                 )
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 8, trailing: 16))
                 .listRowSeparator(.hidden)
+                .moveDisabled(true)
             }
 
             // Items
@@ -259,9 +263,13 @@ struct FileEditorView: View {
                 }
                 .listRowInsets(EdgeInsets())
                 .listRowSeparator(.hidden)
+                .moveDisabled(true)
         }
         .listStyle(.plain)
-        .environment(\.editMode, .constant(.active))
+        // Inject long-press reorder without showing handles.
+        // ReorderProxy finds the UITableView in the hierarchy and installs
+        // a UILongPressGestureRecognizer that calls beginInteractiveMovementForItem.
+        .background(ReorderProxy())
     }
 
     // MARK: - Enter handling
@@ -345,6 +353,91 @@ struct FileEditorView: View {
     private var checkCountLabel: String {
         let items = file.listItems.filter { !$0.isSeparator }
         return "\(items.filter(\.checked).count)/\(items.count)"
+    }
+}
+
+// MARK: - ReorderProxy
+// Zero-size UIViewRepresentable that walks the view hierarchy once to find
+// the UITableView backing the SwiftUI List, then installs a
+// UILongPressGestureRecognizer on it.  The gesture calls
+// beginInteractiveMovementForItem / updateInteractiveMovement /
+// endInteractiveMovement — the same internal API SwiftUI uses when
+// editMode is active — so rows drag smoothly with no visible handles.
+
+private struct ReorderProxy: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView()
+        v.isHidden = true
+        v.isUserInteractionEnabled = false
+        return v
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        // Walk up on the next run-loop tick so the List is fully in the hierarchy.
+        DispatchQueue.main.async {
+            guard let tableView = uiView.nearestAncestor(ofType: UITableView.self) else { return }
+            // Install only once.
+            if tableView.gestureRecognizers?.contains(where: { $0 is TableReorderGesture }) == true { return }
+            let gr = TableReorderGesture(target: context.coordinator,
+                                         action: #selector(Coordinator.handleLongPress(_:)))
+            gr.minimumPressDuration = 0.4
+            gr.delegate = context.coordinator
+            tableView.addGestureRecognizer(gr)
+            context.coordinator.tableView = tableView
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    // MARK: Coordinator
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        weak var tableView: UITableView?
+
+        @objc func handleLongPress(_ gr: UILongPressGestureRecognizer) {
+            guard let tv = tableView else { return }
+            let location = gr.location(in: tv)
+
+            switch gr.state {
+            case .began:
+                guard let indexPath = tv.indexPathForRow(at: location) else { return }
+                // Dismiss keyboard so it doesn't fight the drag.
+                tv.endEditing(true)
+                tv.beginUpdates()
+                _ = tv.beginInteractiveMovementForItem(at: indexPath)
+                tv.endUpdates()
+
+            case .changed:
+                tv.updateInteractiveMovementTargetPosition(location)
+
+            case .ended:
+                tv.endInteractiveMovement()
+
+            default:
+                tv.cancelInteractiveMovement()
+            }
+        }
+
+        // Allow simultaneous recognition with the table's own scroll gesture,
+        // but fail-require scroll so a deliberate swipe still scrolls.
+        func gestureRecognizer(_ gr: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            return other is UIPanGestureRecognizer
+        }
+    }
+}
+
+// Subclass so we can identify our gesture among others on the table.
+private final class TableReorderGesture: UILongPressGestureRecognizer {}
+
+// MARK: - UIView hierarchy helper
+private extension UIView {
+    func nearestAncestor<T: UIView>(ofType type: T.Type) -> T? {
+        var v: UIView? = superview
+        while let current = v {
+            if let match = current as? T { return match }
+            v = current.superview
+        }
+        return nil
     }
 }
 
