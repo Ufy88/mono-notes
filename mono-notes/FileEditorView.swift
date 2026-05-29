@@ -28,16 +28,79 @@ final class KeyboardObserver: ObservableObject {
 }
 
 // MARK: - Notifications
-// Only cross-component notifications that have no common SwiftUI ancestor.
 
 extension Notification.Name {
-    static let sidebarWillOpen = Notification.Name("sidebarWillOpen")
+    static let focusNoteEditor  = Notification.Name("focusNoteEditor")
+    static let sidebarWillOpen  = Notification.Name("sidebarWillOpen")
+    static let focusItem        = Notification.Name("focusItem")
+}
+
+// MARK: - Flat accessory bar
+
+final class AccessoryBar: UIView {
+    private let stack = UIStackView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = UIColor.secondarySystemBackground
+        let line = UIView()
+        line.backgroundColor = UIColor.separator
+        line.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(line)
+        NSLayoutConstraint.activate([
+            line.topAnchor.constraint(equalTo: topAnchor),
+            line.leadingAnchor.constraint(equalTo: leadingAnchor),
+            line.trailingAnchor.constraint(equalTo: trailingAnchor),
+            line.heightAnchor.constraint(equalToConstant: 0.5)
+        ])
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(isList: Bool, target: AnyObject,
+                   indentSel: Selector, unindentSel: Selector,
+                   separatorSel: Selector, dismissSel: Selector) {
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        if isList {
+            stack.addArrangedSubview(barBtn("arrow.left.to.line", 13, target, unindentSel))
+            stack.addArrangedSubview(gap(8))
+            stack.addArrangedSubview(barBtn("arrow.right.to.line", 13, target, indentSel))
+            stack.addArrangedSubview(gap(16))
+            stack.addArrangedSubview(barBtn("minus", 13, target, separatorSel))
+        }
+        stack.addArrangedSubview(flex())
+        stack.addArrangedSubview(barBtn("keyboard.chevron.compact.down", 15, target, dismissSel))
+    }
+
+    private func barBtn(_ icon: String, _ size: CGFloat, _ target: AnyObject, _ sel: Selector) -> UIButton {
+        let btn = UIButton(type: .system)
+        btn.setImage(UIImage(systemName: icon,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .regular)), for: .normal)
+        btn.tintColor = UIColor.secondaryLabel
+        btn.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        btn.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        btn.addTarget(target, action: sel, for: .touchUpInside)
+        return btn
+    }
+    private func gap(_ w: CGFloat) -> UIView {
+        let v = UIView(); v.widthAnchor.constraint(equalToConstant: w).isActive = true; return v
+    }
+    private func flex() -> UIView {
+        let v = UIView(); v.setContentHuggingPriority(.defaultLow, for: .horizontal); return v
+    }
 }
 
 // MARK: - FileEditorView
-// Coordinator: toolbar + FAB + note/list branch.
-// List mutations delegate to ListEditorState (ListEditorState.swift).
-// UIKit wrappers live in ListEditorComponents.swift.
 
 struct FileEditorView: View {
     @EnvironmentObject var store: AppStore
@@ -47,15 +110,14 @@ struct FileEditorView: View {
     let tab: AppTab
 
     @State private var file: FileItem
-    @StateObject private var listState: ListEditorState
+    @State private var focusedItemID: UUID? = nil
+    @State private var titleFocused: Bool = false
+    @State private var keyboardDismissed: Bool = false
 
     init(file: FileItem, tab: AppTab) {
         self.initialFile = file
         self.tab = tab
         _file = State(initialValue: file)
-        _listState = StateObject(wrappedValue: ListEditorState(
-            file: file, tab: tab, store: AppStore.shared
-        ))
     }
 
     var body: some View {
@@ -68,51 +130,40 @@ struct FileEditorView: View {
             .background(Color(.systemBackground))
 
             if !keyboard.isVisible {
-                fabButton
+                Button {
+                    keyboardDismissed = false
+                    if file.kind == .note {
+                        NotificationCenter.default.post(name: .focusNoteEditor, object: nil)
+                    } else {
+                        let id = focusedItemID ?? file.listItems.first(where: { !$0.isSeparator })?.id
+                        if let id {
+                            focusedItemID = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = id }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .padding(10)
+                        .background(Color(.secondarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+                }
+                .padding(.trailing, 16)
+                .padding(.bottom, 16)
+                .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.18), value: keyboard.isVisible)
-        .onAppear {
-            let fresh = store.findFile(id: initialFile.id) ?? initialFile
-            file = fresh
-            listState.file = fresh
-        }
+        .onAppear { file = store.findFile(id: initialFile.id) ?? initialFile }
         .onReceive(NotificationCenter.default.publisher(for: .sidebarWillOpen)) { _ in
-            listState.sidebarWillOpen()
+            keyboardDismissed = true
+            focusedItemID = nil
         }
-        .onReceive(listState.objectWillChange) { _ in
-            file = listState.file
-        }
-    }
-
-    // MARK: - FAB
-    // For notes: set noteFocused = true — NoteEditorWrapper observes the binding.
-    // For lists: refocus the last known item.
-
-    private var fabButton: some View {
-        Button {
-            if file.kind == .note {
-                listState.noteFocused = true
-            } else {
-                let id = listState.focusedItemID ?? file.listItems.first(where: { !$0.isSeparator })?.id
-                if let id { listState.refocus(id: id) }
-            }
-        } label: {
-            Image(systemName: "keyboard")
-                .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(.secondary)
-                .padding(10)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
-        }
-        .padding(.trailing, 16)
-        .padding(.bottom, 16)
-        .transition(.opacity)
     }
 
     // MARK: - Toolbar
-
     private var toolbar: some View {
         HStack(spacing: 16) {
             Text(file.dateLabel)
@@ -125,44 +176,30 @@ struct FileEditorView: View {
     }
 
     // MARK: - Note editor
-    // isFocused binding replaces the old .focusNoteEditor notification.
-
     private var noteEditor: some View {
         NoteEditorWrapper(
             text: Binding(
                 get: { file.body },
                 set: { file.body = $0; file.updatedAt = Date(); store.updateFile(file, tab: tab) }
             ),
-            isFocused: $listState.noteFocused,
-            onDismiss: { listState.dismissKeyboard() }
+            onDismiss: { keyboardDismissed = true; KeyboardObserver.dismiss() }
         )
     }
 
     // MARK: - List editor
-
     private var listEditor: some View {
         List {
             Section {
                 TitleTextField(
-                    text: Binding(
-                        get: { file.title },
-                        set: { file.title = $0; listState.file.title = $0; listState.save() }
-                    ),
+                    text: Binding(get: { file.title }, set: { file.title = $0; save() }),
                     placeholder: file.autoTitle,
-                    requestFocus: $listState.titleFocused,
+                    requestFocus: $titleFocused,
                     onReturn: {
-                        listState.titleFocused = false
-                        listState.keyboardDismissed = false
-                        let firstID = file.listItems.first(where: { !$0.isSeparator })?.id
-                        if let id = firstID {
-                            listState.refocus(id: id)
-                        } else {
-                            let item = listState.addNewItem(after: nil)
-                            listState.save()
-                            listState.focusedItemID = item.id
-                        }
+                        titleFocused = false; keyboardDismissed = false
+                        focusedItemID = file.listItems.first(where: { !$0.isSeparator })?.id
+                            ?? addNewItem(after: nil).id
                     },
-                    onDismiss: { listState.dismissKeyboard() }
+                    onDismiss: { keyboardDismissed = true; KeyboardObserver.dismiss() }
                 )
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 8, trailing: 16))
                 .listRowSeparator(.hidden)
@@ -170,40 +207,54 @@ struct FileEditorView: View {
             }
 
             let visible = file.visibleItemIDs()
-            ForEach($listState.file.listItems, id: \.id) { $item in
+            ForEach($file.listItems, id: \.id) { $item in
                 if visible.contains(item.id) {
                     if item.isSeparator {
                         SeparatorRow()
                             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
                             .listRowSeparator(.hidden)
                     } else {
-                        let idx = listState.file.listItems.firstIndex(where: { $0.id == item.id }) ?? 0
+                        let idx = file.listItems.firstIndex(where: { $0.id == item.id }) ?? 0
                         OutlineItemRow(
                             item: $item,
                             hasChildren: file.hasChildren(after: item),
-                            isActive: listState.focusedItemID == item.id && !listState.keyboardDismissed,
-                            onFocus: { listState.keyboardDismissed = false; listState.focusedItemID = item.id },
-                            onEnter: { listState.handleEnter(at: idx) },
-                            onIndent: { listState.indent(at: idx) },
-                            onUnindent: { listState.handleUnindent(at: idx) },
-                            onDeleteSeparatorAbove: { listState.handleDeleteSeparatorAbove(at: idx) },
-                            onCheck: { listState.toggleCheck(at: idx) },
-                            onToggleCollapse: { listState.toggleCollapse(at: idx) },
-                            onInsertSeparator: { listState.insertSeparator(after: idx) },
-                            onDismissKeyboard: { listState.dismissKeyboard() },
-                            onChange: { listState.save() }
+                            isActive: focusedItemID == item.id && !keyboardDismissed,
+                            onFocus: { keyboardDismissed = false; focusedItemID = item.id },
+                            onEnter: { handleEnter(at: idx) },
+                            onIndent: { file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save() },
+                            onUnindent: { handleUnindent(at: idx, visible: visible) },
+                            onDeleteSeparatorAbove: { handleDeleteSeparatorAbove(at: idx) },
+                            onCheck: { file.listItems[idx].checked.toggle(); save() },
+                            onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
+                            onInsertSeparator: { insertSeparator(after: idx) },
+                            onDismissKeyboard: { keyboardDismissed = true; KeyboardObserver.dismiss() },
+                            onChange: { save() }
                         )
                         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
                         .listRowSeparator(.hidden)
                     }
                 }
             }
-            .onMove { from, to in listState.moveItems(from: from, to: to) }
+            .onMove { from, to in
+                file.listItems.move(fromOffsets: from, toOffset: to)
+                save()
+            }
 
             Color.clear
-                .frame(maxWidth: .infinity).frame(height: 300)
+                .frame(maxWidth: .infinity)
+                .frame(height: 300)
                 .contentShape(Rectangle())
-                .onTapGesture { listState.refocusLast() }
+                .onTapGesture {
+                    keyboardDismissed = false
+                    let lastID = file.listItems.last(where: { !$0.isSeparator })?.id
+                    if let id = lastID {
+                        focusedItemID = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = id }
+                    } else {
+                        let item = addNewItem(after: nil); save()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = item.id }
+                    }
+                }
                 .listRowInsets(EdgeInsets())
                 .listRowSeparator(.hidden)
                 .moveDisabled(true)
@@ -213,7 +264,80 @@ struct FileEditorView: View {
         .background(HideReorderHandlesProxy())
     }
 
-    // MARK: - Helpers
+    // MARK: - Enter handling
+    private func handleEnter(at idx: Int) {
+        let current = file.listItems[idx]
+        let isEmpty = current.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if isEmpty {
+            if current.depth > 0 { file.listItems[idx].depth -= 1; save() }
+            return
+        }
+        let newItem = addNewItem(after: current.id)
+        save()
+        focusedItemID = newItem.id
+    }
+
+    private func handleUnindent(at idx: Int, visible: Set<UUID>) {
+        guard idx < file.listItems.count else { return }
+        if file.listItems[idx].depth > 0 {
+            file.listItems[idx].depth -= 1; save()
+            return
+        }
+        guard file.listItems[idx].text.isEmpty else { return }
+        let prevID = prevVisibleID(before: idx, visible: visible)
+        file.listItems.remove(at: idx)
+        save()
+        if let pid = prevID {
+            focusedItemID = pid
+            NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": pid])
+        }
+    }
+
+    @discardableResult
+    private func handleDeleteSeparatorAbove(at idx: Int) -> Bool {
+        guard idx > 0, idx < file.listItems.count else { return false }
+        guard file.listItems[idx - 1].isSeparator else { return false }
+        let itemID = file.listItems[idx].id
+        file.listItems.remove(at: idx - 1)
+        save()
+        focusedItemID = itemID
+        NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": itemID])
+        return true
+    }
+
+    @discardableResult
+    private func addNewItem(after id: UUID?) -> ListItem {
+        var depth = 0
+        var insertIndex = file.listItems.endIndex
+        if let id, let idx = file.listItems.firstIndex(where: { $0.id == id }) {
+            depth = file.listItems[idx].depth
+            insertIndex = idx + 1
+        }
+        var item = ListItem(); item.depth = depth
+        file.listItems.insert(item, at: insertIndex)
+        return item
+    }
+
+    private func insertSeparator(after idx: Int) {
+        var sep = ListItem(); sep.isSeparator = true
+        file.listItems.insert(sep, at: idx + 1)
+        let blank = ListItem()
+        file.listItems.insert(blank, at: idx + 2)
+        save()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = blank.id }
+    }
+
+    private func prevVisibleID(before idx: Int, visible: Set<UUID>) -> UUID? {
+        guard idx > 0 else { return nil }
+        for i in stride(from: idx - 1, through: 0, by: -1) {
+            if visible.contains(file.listItems[i].id) && !file.listItems[i].isSeparator {
+                return file.listItems[i].id
+            }
+        }
+        return nil
+    }
+
+    private func save() { file.updatedAt = Date(); store.updateFile(file, tab: tab) }
 
     private var wordCountLabel: String {
         "\(file.body.split { $0.isWhitespace }.count)w \(file.body.count)c"
@@ -221,5 +345,403 @@ struct FileEditorView: View {
     private var checkCountLabel: String {
         let items = file.listItems.filter { !$0.isSeparator }
         return "\(items.filter(\.checked).count)/\(items.count)"
+    }
+}
+
+// MARK: - HideReorderHandlesProxy
+
+private struct HideReorderHandlesProxy: UIViewRepresentable {
+    func makeUIView(context: Context) -> HideHandlesView { HideHandlesView() }
+    func updateUIView(_ uiView: HideHandlesView, context: Context) {
+        DispatchQueue.main.async {
+            guard let tableView = uiView.nearestAncestor(ofType: UITableView.self) else { return }
+            uiView.attach(to: tableView)
+        }
+    }
+}
+
+private final class HideHandlesView: UIView {
+    private weak var tableView: UITableView?
+    private var displayLink: CADisplayLink?
+
+    func attach(to tableView: UITableView) {
+        guard self.tableView !== tableView else { return }
+        self.tableView = tableView
+        displayLink?.invalidate()
+        let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30)
+        link.add(to: .main, forMode: .common)
+        self.displayLink = link
+    }
+
+    @objc private func tick() {
+        tableView?.visibleCells.forEach { hideHandles(in: $0) }
+    }
+
+    private func hideHandles(in view: UIView) {
+        if NSStringFromClass(type(of: view)) == "UITableViewCellReorderControl" {
+            if view.alpha != 0 { view.alpha = 0 }
+            return
+        }
+        view.subviews.forEach { hideHandles(in: $0) }
+    }
+
+    override func removeFromSuperview() {
+        displayLink?.invalidate()
+        displayLink = nil
+        super.removeFromSuperview()
+    }
+}
+
+// MARK: - UIView hierarchy helper
+private extension UIView {
+    func nearestAncestor<T: UIView>(ofType type: T.Type) -> T? {
+        var v: UIView? = superview
+        while let current = v {
+            if let match = current as? T { return match }
+            v = current.superview
+        }
+        return nil
+    }
+}
+
+// MARK: - NoteEditorWrapper
+struct NoteEditorWrapper: UIViewRepresentable {
+    @Binding var text: String
+    let onDismiss: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> UITextView {
+        let tv = UITextView()
+        tv.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+        tv.autocorrectionType = .no
+        tv.autocapitalizationType = .none
+        tv.spellCheckingType = .no
+        tv.backgroundColor = .systemBackground
+        tv.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        tv.delegate = context.coordinator
+        let bar = AccessoryBar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
+        bar.configure(isList: false, target: context.coordinator,
+                      indentSel: #selector(Coordinator.noop), unindentSel: #selector(Coordinator.noop),
+                      separatorSel: #selector(Coordinator.noop), dismissSel: #selector(Coordinator.tappedDismiss))
+        tv.inputAccessoryView = bar
+        context.coordinator.textView = tv
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.focusFromFAB),
+                                               name: .focusNoteEditor, object: nil)
+        return tv
+    }
+
+    func updateUIView(_ tv: UITextView, context: Context) {
+        context.coordinator.parent = self
+        if tv.text != text { tv.text = text }
+    }
+
+    class Coordinator: NSObject, UITextViewDelegate {
+        var parent: NoteEditorWrapper
+        weak var textView: UITextView?
+        init(parent: NoteEditorWrapper) { self.parent = parent }
+        func textViewDidChange(_ tv: UITextView) { parent.text = tv.text }
+        @objc func tappedDismiss() { parent.onDismiss() }
+        @objc func focusFromFAB() { textView?.becomeFirstResponder() }
+        @objc func noop() {}
+    }
+}
+
+// MARK: - SeparatorRow
+struct SeparatorRow: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color(.separator))
+            .frame(maxWidth: .infinity)
+            .frame(height: 0.5)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+    }
+}
+
+// MARK: - TitleTextField
+struct TitleTextField: UIViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    @Binding var requestFocus: Bool
+    let onReturn: () -> Void
+    let onDismiss: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField()
+        field.font = UIFont.monospacedSystemFont(ofSize: 20, weight: .semibold)
+        field.returnKeyType = .next
+        field.autocorrectionType = .no
+        field.autocapitalizationType = .none
+        field.spellCheckingType = .no
+        field.delegate = context.coordinator
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let bar = AccessoryBar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
+        bar.configure(isList: false, target: context.coordinator,
+                      indentSel: #selector(Coordinator.noop), unindentSel: #selector(Coordinator.noop),
+                      separatorSel: #selector(Coordinator.noop), dismissSel: #selector(Coordinator.tappedDismiss))
+        field.inputAccessoryView = bar
+        context.coordinator.field = field
+        return field
+    }
+
+    func updateUIView(_ field: UITextField, context: Context) {
+        context.coordinator.parent = self
+        if field.text != text && !field.isFirstResponder { field.text = text }
+        field.attributedPlaceholder = NSAttributedString(string: placeholder, attributes: [
+            .foregroundColor: UIColor.tertiaryLabel,
+            .font: UIFont.monospacedSystemFont(ofSize: 20, weight: .semibold)])
+        if requestFocus && !field.isFirstResponder {
+            DispatchQueue.main.async { field.becomeFirstResponder(); self.requestFocus = false }
+        }
+    }
+
+    class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: TitleTextField
+        weak var field: UITextField?
+        init(parent: TitleTextField) { self.parent = parent }
+        func textField(_ tf: UITextField, shouldChangeCharactersIn r: NSRange, replacementString s: String) -> Bool {
+            let cur = tf.text ?? ""
+            if let range = Range(r, in: cur) { parent.text = cur.replacingCharacters(in: range, with: s) }
+            return true
+        }
+        func textFieldShouldReturn(_ tf: UITextField) -> Bool { tf.resignFirstResponder(); parent.onReturn(); return false }
+        @objc func tappedDismiss() { field?.resignFirstResponder(); parent.onDismiss() }
+        @objc func noop() {}
+    }
+}
+
+// MARK: - OutlineItemRow
+
+struct OutlineItemRow: View {
+    @Binding var item: ListItem
+    let hasChildren: Bool
+    let isActive: Bool
+    let onFocus: () -> Void
+    let onEnter: () -> Void
+    let onIndent: () -> Void
+    let onUnindent: () -> Void
+    let onDeleteSeparatorAbove: () -> Bool
+    let onCheck: () -> Void
+    let onToggleCollapse: () -> Void
+    let onInsertSeparator: () -> Void
+    let onDismissKeyboard: () -> Void
+    let onChange: () -> Void
+
+    @State private var textHeight: CGFloat = 32
+
+    private var indentWidth: CGFloat { CGFloat(item.depth) * 20 }
+    private let bulletWidth: CGFloat = 22
+    private let chevronWidth: CGFloat = 28
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            if item.depth > 0 {
+                Color.clear.frame(width: indentWidth, height: 1)
+            }
+
+            Text("\u{2022}")
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
+                .frame(width: bulletWidth, alignment: .center)
+                .padding(.top, 3)
+                .onTapGesture { onCheck() }
+
+            OutlineTextView(
+                text: $item.text,
+                itemID: item.id,
+                isActive: isActive,
+                isChecked: item.checked,
+                onFocus: onFocus,
+                onEnter: onEnter,
+                onIndent: onIndent,
+                onUnindent: onUnindent,
+                onDeleteSeparatorAbove: onDeleteSeparatorAbove,
+                onInsertSeparator: onInsertSeparator,
+                onDismissKeyboard: onDismissKeyboard,
+                onChange: onChange,
+                onHeightChange: { h in
+                    if abs(h - textHeight) > 0.5 { textHeight = h }
+                }
+            )
+            .frame(maxWidth: .infinity, minHeight: textHeight, maxHeight: textHeight)
+
+            if hasChildren {
+                Button(action: onToggleCollapse) {
+                    Image(systemName: item.isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.quaternary)
+                        .frame(width: chevronWidth, height: 28).contentShape(Rectangle())
+                }.buttonStyle(.plain).padding(.top, 1)
+            } else {
+                Color.clear.frame(width: chevronWidth, height: 1)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+    }
+}
+
+// MARK: - OutlineTextView
+
+struct OutlineTextView: UIViewRepresentable {
+    @Binding var text: String
+    let itemID: UUID
+    let isActive: Bool
+    let isChecked: Bool
+    let onFocus: () -> Void
+    let onEnter: () -> Void
+    let onIndent: () -> Void
+    let onUnindent: () -> Void
+    let onDeleteSeparatorAbove: () -> Bool
+    let onInsertSeparator: () -> Void
+    let onDismissKeyboard: () -> Void
+    let onChange: () -> Void
+    let onHeightChange: (CGFloat) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> GrowingTextView {
+        let tv = GrowingTextView()
+        tv.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+        tv.autocorrectionType = .no
+        tv.autocapitalizationType = .none
+        tv.spellCheckingType = .no
+        tv.isScrollEnabled = false
+        tv.backgroundColor = .clear
+        tv.textContainerInset = UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+        tv.textContainer.lineFragmentPadding = 0
+        tv.textContainer.widthTracksTextView = true
+        tv.returnKeyType = .next
+        tv.delegate = context.coordinator
+        tv.coordinator = context.coordinator
+        tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        tv.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let bar = AccessoryBar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
+        bar.configure(isList: true, target: context.coordinator,
+                      indentSel: #selector(Coordinator.tappedIndent),
+                      unindentSel: #selector(Coordinator.tappedUnindent),
+                      separatorSel: #selector(Coordinator.tappedSeparator),
+                      dismissSel: #selector(Coordinator.tappedDismiss))
+        tv.inputAccessoryView = bar
+
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.handleFocusItem(_:)),
+            name: .focusItem,
+            object: nil
+        )
+
+        return tv
+    }
+
+    func updateUIView(_ tv: GrowingTextView, context: Context) {
+        context.coordinator.parent = self
+        tv.coordinator = context.coordinator
+
+        if tv.text != text { tv.text = text }
+
+        let paraStyle = NSMutableParagraphStyle()
+        paraStyle.lineSpacing = 1
+        let attrs: [NSAttributedString.Key: Any] = isChecked
+            ? [.strikethroughStyle: NSUnderlineStyle.single.rawValue,
+               .foregroundColor: UIColor.tertiaryLabel,
+               .font: UIFont.monospacedSystemFont(ofSize: 13, weight: .medium),
+               .paragraphStyle: paraStyle]
+            : [.foregroundColor: UIColor.label,
+               .font: UIFont.monospacedSystemFont(ofSize: 13, weight: .medium),
+               .paragraphStyle: paraStyle]
+
+        let newAttr = NSAttributedString(string: tv.text, attributes: attrs)
+        if tv.attributedText != newAttr { tv.attributedText = newAttr }
+
+        if isActive && !tv.isFirstResponder {
+            DispatchQueue.main.async { tv.becomeFirstResponder() }
+        }
+    }
+
+    class Coordinator: NSObject, UITextViewDelegate {
+        var parent: OutlineTextView
+        weak var textView: GrowingTextView?
+        init(parent: OutlineTextView) { self.parent = parent }
+
+        func textView(_ tv: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+            if text == "\n" { parent.onEnter(); return false }
+            return true
+        }
+        func textViewDidChange(_ tv: UITextView) {
+            if parent.text != tv.text { parent.text = tv.text; parent.onChange() }
+        }
+        func textViewDidBeginEditing(_ tv: UITextView) { parent.onFocus() }
+
+        @objc func handleFocusItem(_ note: Notification) {
+            guard let id = note.userInfo?["id"] as? UUID,
+                  id == parent.itemID,
+                  let tv = textView,
+                  !tv.isFirstResponder
+            else { return }
+            tv.becomeFirstResponder()
+        }
+
+        @objc func tappedIndent() { parent.onIndent() }
+        @objc func tappedUnindent() { parent.onUnindent() }
+        @objc func tappedDismiss() { parent.onDismissKeyboard() }
+        @objc func tappedSeparator() { parent.onInsertSeparator() }
+    }
+}
+
+// MARK: - GrowingTextView
+
+class GrowingTextView: UITextView {
+    weak var coordinator: OutlineTextView.Coordinator?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        coordinator?.textView = self
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        reportHeight()
+    }
+
+    private func reportHeight() {
+        guard bounds.width > 0 else { return }
+        let fittingSize = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
+        let h = max(fittingSize.height, 32)
+        coordinator?.parent.onHeightChange(h)
+    }
+
+    override func deleteBackward() {
+        let atStart: Bool = {
+            guard let r = selectedTextRange else { return false }
+            return r.isEmpty && offset(from: beginningOfDocument, to: r.start) == 0
+        }()
+
+        if atStart && text.isEmpty {
+            let separatorDeleted = coordinator?.parent.onDeleteSeparatorAbove() ?? false
+            if !separatorDeleted {
+                coordinator?.parent.onUnindent()
+            }
+            return
+        }
+
+        if atStart && !text.isEmpty {
+            coordinator?.parent.onUnindent()
+        }
+
+        if !text.isEmpty { super.deleteBackward() }
+    }
+}
+
+// MARK: - FileItem extensions
+extension FileItem {
+    var autoTitle: String {
+        listItems.first(where: { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty && !$0.isSeparator })?.text ?? "Untitled"
     }
 }
