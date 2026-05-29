@@ -8,6 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		AA000001 /* MonoNotesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000011 /* MonoNotesApp.swift */; };
+		AA000002 /* ListEditorState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000022 /* ListEditorState.swift */; };
+		AA000003 /* SidebarComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000023 /* SidebarComponents.swift */; };
+		AA000004 /* TreeHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000024 /* TreeHelpers.swift */; };
+		AA00000F /* ListEditorComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00001F /* ListEditorComponents.swift */; };
 		AA000007 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000017 /* Models.swift */; };
 		AA000008 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000018 /* AppStore.swift */; };
 		AA000009 /* DragDropTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000019 /* DragDropTypes.swift */; };
@@ -29,6 +33,10 @@
 		AA00001C /* FileEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileEditorView.swift; sourceTree = "<group>"; };
 		AA00001D /* EmptyScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyScreenView.swift; sourceTree = "<group>"; };
 		AA00001E /* PlaceholderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaceholderView.swift; sourceTree = "<group>"; };
+		AA00001F /* ListEditorComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListEditorComponents.swift; sourceTree = "<group>"; };
+		AA000022 /* ListEditorState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListEditorState.swift; sourceTree = "<group>"; };
+		AA000023 /* SidebarComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarComponents.swift; sourceTree = "<group>"; };
+		AA000024 /* TreeHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreeHelpers.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,7 +67,11 @@
 				AA000019 /* DragDropTypes.swift */,
 				AA00001A /* RootView.swift */,
 				AA00001B /* SidebarView.swift */,
+				AA000023 /* SidebarComponents.swift */,
 				AA00001C /* FileEditorView.swift */,
+				AA00001F /* ListEditorComponents.swift */,
+				AA000022 /* ListEditorState.swift */,
+				AA000024 /* TreeHelpers.swift */,
 				AA00001D /* EmptyScreenView.swift */,
 				AA00001E /* PlaceholderView.swift */,
 			);
@@ -137,7 +149,11 @@
 				AA000009 /* DragDropTypes.swift in Sources */,
 				AA00000A /* RootView.swift in Sources */,
 				AA00000B /* SidebarView.swift in Sources */,
+				AA000003 /* SidebarComponents.swift in Sources */,
 				AA00000C /* FileEditorView.swift in Sources */,
+				AA00000F /* ListEditorComponents.swift in Sources */,
+				AA000002 /* ListEditorState.swift in Sources */,
+				AA000004 /* TreeHelpers.swift in Sources */,
 				AA00000D /* EmptyScreenView.swift in Sources */,
 				AA00000E /* PlaceholderView.swift in Sources */,
 			);
