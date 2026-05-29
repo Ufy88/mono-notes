@@ -9,60 +9,61 @@ struct RootView: View {
     // Drag tracking
     @State private var dragOffset: CGFloat = 0
     private let edgeWidth: CGFloat = 24      // left-edge hit zone width
-    private let sidebarWidth: CGFloat = UIScreen.main.bounds.width * 0.8
     private let openThreshold: CGFloat = 60  // min swipe distance to open
     private let closeThreshold: CGFloat = 60 // min swipe distance to close
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            mainContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Full-screen gesture: close sidebar by swiping left anywhere
-                .gesture(closeSidebarGesture)
+        GeometryReader { geo in
+            let sidebarWidth = geo.size.width * 0.8
 
-            if sidebarOpen {
-                Color.black.opacity(0.25)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                            sidebarOpen = false
+            ZStack(alignment: .leading) {
+                mainContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .gesture(closeSidebarGesture(sidebarWidth: sidebarWidth))
+
+                if sidebarOpen {
+                    Color.black.opacity(0.25)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                sidebarOpen = false
+                            }
                         }
-                    }
-                    .transition(.opacity)
-            }
+                        .transition(.opacity)
+                }
 
-            if sidebarOpen {
-                SidebarView(
-                    selectedFile: $selectedFile,
-                    selectedTab: $selectedTab,
-                    sidebarOpen: $sidebarOpen
-                )
-                .frame(width: sidebarWidth)
-                .shadow(color: .black.opacity(0.12), radius: 16, x: 4, y: 0)
-                .transition(.move(edge: .leading))
-            }
+                if sidebarOpen {
+                    SidebarView(
+                        selectedFile: $selectedFile,
+                        selectedTab: $selectedTab,
+                        sidebarOpen: $sidebarOpen
+                    )
+                    .frame(width: sidebarWidth)
+                    .shadow(color: .black.opacity(0.12), radius: 16, x: 4, y: 0)
+                    .transition(.move(edge: .leading))
+                }
 
-            // Invisible left-edge swipe zone — opens sidebar
-            if !sidebarOpen {
-                Color.clear
-                    .frame(width: edgeWidth)
-                    .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
-                    .gesture(openSidebarGesture)
-                    .ignoresSafeArea()
+                // Invisible left-edge swipe zone — opens sidebar
+                if !sidebarOpen {
+                    Color.clear
+                        .frame(width: edgeWidth)
+                        .frame(maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                        .gesture(openSidebarGesture(sidebarWidth: sidebarWidth))
+                        .ignoresSafeArea()
+                }
             }
+            .animation(.spring(response: 0.3, dampingFraction: 0.85), value: sidebarOpen)
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: sidebarOpen)
         .onAppear { restoreLastOpened() }
     }
 
     // MARK: - Gestures
 
     /// Swipe right from the left edge → open sidebar
-    private var openSidebarGesture: some Gesture {
+    private func openSidebarGesture(sidebarWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
             .onChanged { value in
-                // Only respond to mostly-horizontal rightward drags
                 guard value.translation.width > 0,
                       abs(value.translation.width) > abs(value.translation.height) * 1.2
                 else { return }
@@ -79,9 +80,9 @@ struct RootView: View {
     }
 
     /// Swipe left while sidebar is open → close sidebar
-    private var closeSidebarGesture: some Gesture {
+    private func closeSidebarGesture(sidebarWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
-            .onChanged { _ in } // need onChanged for onEnded to fire
+            .onChanged { _ in }
             .onEnded { value in
                 guard sidebarOpen else { return }
                 let dx = value.translation.width
