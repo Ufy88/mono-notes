@@ -12,18 +12,26 @@ struct SearchResultRow: View {
     let activeTab: AppTab
     @Binding var sidebarOpen: Bool
 
+    private var isSelected: Bool { selectedFile?.id == file.id }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(file.displayTitle)
                 .font(.system(.footnote, design: .monospaced))
-                .foregroundStyle(selectedFile?.id == file.id ? .primary : .secondary)
+                .foregroundStyle(isSelected ? .primary : .secondary)
                 .lineLimit(1)
             highlightedPreview
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(selectedFile?.id == file.id ? Color(.systemFill) : .clear)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color(UIColor(r: 235, g: 69, b: 121)), lineWidth: 1)
+                    .padding(.horizontal, 6)
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture {
             selectedFile = file
@@ -51,6 +59,15 @@ struct SearchResultRow: View {
         }
     }
 }
+
+// MARK: - Accent color helper (avoids repeating UIColor init)
+
+private extension UIColor {
+    convenience init(r: CGFloat, g: CGFloat, b: CGFloat) {
+        self.init(red: r/255, green: g/255, blue: b/255, alpha: 1)
+    }
+}
+private let accentBorder = Color(UIColor(r: 235, g: 69, b: 121))
 
 // MARK: - Root drop zone
 
@@ -234,6 +251,7 @@ struct SidebarChildView: View {
     // MARK: File row
     @ViewBuilder
     private func fileRow(_ file: FileItem) -> some View {
+        let isSelected = selectedFile?.id == file.id
         HStack(spacing: 6) {
             Image(systemName: file.kind == .note ? "doc.text" : "list.bullet")
                 .font(.system(.footnote))
@@ -242,14 +260,13 @@ struct SidebarChildView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(file.displayTitle)
                     .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(selectedFile?.id == file.id ? .primary : .secondary)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
                     .lineLimit(1)
             }
             Spacer()
             Text(file.dateLabel)
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.quaternary)
-            // 4.3: rename + delete in ellipsis menu
             Menu {
                 Button {
                     localRename = file.title.isEmpty ? file.displayTitle : file.title
@@ -270,7 +287,15 @@ struct SidebarChildView: View {
         .padding(.leading, CGFloat(depth) * 16 + 12)
         .padding(.trailing, 6)
         .padding(.vertical, 9)
-        .background(selectedFile?.id == file.id ? Color(.systemFill) : .clear)
+        // Rounded border instead of solid fill
+        .padding(.horizontal, 6)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(accentBorder, lineWidth: 1)
+            }
+        }
+        .padding(.horizontal, 2)
         .contentShape(Rectangle())
         .onTapGesture {
             selectedFile = file
@@ -278,7 +303,6 @@ struct SidebarChildView: View {
             store.setLastOpened(id: file.id, tab: tab)
             withAnimation { sidebarOpen = false }
         }
-        // 4.4: swipe shows confirmation alert, no instant delete
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
                 showDeleteFileAlert = true
@@ -290,7 +314,6 @@ struct SidebarChildView: View {
         }
         .opacity(draggingID == file.id ? 0.4 : 1.0)
         .animation(.easeInOut(duration: 0.15), value: draggingID)
-        // Shared alert for both ellipsis and swipe
         .alert("Delete \"\(file.displayTitle)\"?", isPresented: $showDeleteFileAlert) {
             Button("Delete", role: .destructive) {
                 store.delete(id: file.id, tab: tab)
