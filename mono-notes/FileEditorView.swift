@@ -263,9 +263,11 @@ struct FileEditorView: View {
         }
         .listStyle(.plain)
         .environment(\.editMode, .constant(.active))
-        // Removes UITableView's default 44pt minimum row height so rows
-        // collapse to their natural content height (text + 2pt insets).
+        // 1pt minimum so rows sit at their natural content height.
         .environment(\.defaultMinListRowHeight, 1)
+        // Kills the extra gap SwiftUI injects between the title Section
+        // and the first content row.
+        .environment(\.defaultMinListHeaderHeight, 1)
         .background(HideReorderHandlesProxy())
     }
 
@@ -279,18 +281,23 @@ struct FileEditorView: View {
 
     private func syncState() {
         listState.file = file
-        listState.onSave = {
-            self.file = self.listState.file
-            self.file.updatedAt = Date()
-            self.store.updateFile(self.file, tab: self.tab)
+        listState.onSave = { [self] in
+            file = listState.file
+            file.updatedAt = Date()
+            store.updateFile(file, tab: tab)
         }
     }
 
+    // MARK: - Labels
+
     private var wordCountLabel: String {
-        "\(file.body.split { $0.isWhitespace }.count)w \(file.body.count)c"
+        let words = file.body.split(separator: " ").count
+        return "\(words)w"
     }
+
     private var checkCountLabel: String {
         let items = file.listItems.filter { !$0.isSeparator }
-        return "\(items.filter(\.checked).count)/\(items.count)"
+        let checked = items.filter(\.checked).count
+        return "\(checked)/\(items.count)"
     }
 }
