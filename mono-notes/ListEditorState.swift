@@ -9,6 +9,10 @@ final class ListEditorState {
     var focusedItemID: UUID? = nil
     var onSave: () -> Void = {}
 
+    // Snapshot of items that were expanded before drag started.
+    // Key: item ID, Value: true if was expanded (i.e. !isCollapsed).
+    private var dragExpandSnapshot: [UUID: Bool] = [:]
+
     // MARK: Enter key
 
     func handleEnter(at idx: Int) {
@@ -72,8 +76,6 @@ final class ListEditorState {
     }
 
     // MARK: Insert separator
-    // Returns the ID of the blank item inserted after the separator so
-    // the caller can issue a FocusRequest without any timing hacks.
 
     @discardableResult
     func insertSeparator(after idx: Int) -> UUID {
@@ -85,24 +87,60 @@ final class ListEditorState {
         return blank.id
     }
 
+    // MARK: Collapse for drag
+    // Called the moment the user picks up a row (via .onDrag).
+    // Collapses:
+    //   a) Own subtree of the dragged item (its children).
+    //   b) Every other item in the list that has depth > dragged.depth
+    //      — these are children of OTHER parents and must not be
+    //      accessible as drop targets while the drag is in flight,
+    //      otherwise the dragged item can slip between them and
+    //      silently steal their parent role.
+    // Saves original expanded state in dragExpandSnapshot so
+    // restoreAfterDrag() can undo everything.
+
+    func collapseForDrag(sourceIndex: Int) {
+        guard sourceIndex < file.listItems.count else { return }
+        let draggedDepth = file.listItems[sourceIndex].depth
+
+        dragExpandSnapshot = [:]
+
+        for i in file.listItems.indices {
+            let item = file.listItems[i]
+            guard !item.isSeparator else { continue }
+
+            // Record current state for every non-separator item.
+            dragExpandSnapshot[item.id] = !item.isCollapsed
+
+            // Collapse:
+            // - dragged item's own children (depth > draggedDepth, consecutive after sourceIndex)
+            // - any other item with depth > draggedDepth (foreign children)
+            if i != sourceIndex && item.depth > draggedDepth {
+                file.listItems[i].isCollapsed = true
+            }
+        }
+
+        onSave()
+    }
+
+    // MARK: Restore after drag
+    // Restores every item to its pre-drag collapse state.
+    // Called at the end of moveWithChildren.
+
+    private func restoreAfterDrag() {
+        guard !dragExpandSnapshot.isEmpty else { return }
+        for i in file.listItems.indices {
+            let id = file.listItems[i].id
+            if let wasExpanded = dragExpandSnapshot[id] {
+                file.listItems[i].isCollapsed = !wasExpanded
+            }
+        }
+        dragExpandSnapshot = [:]
+    }
+
     // MARK: Move with children
-    // Replaces the plain .onMove handler so that dragging a parent
-    // also moves its entire subtree.
-    //
-    // Strategy:
-    // 1. Identify the subtree block starting at `sourceIndex`:
-    //    parent + all consecutive items with greater depth
-    //    (stops at a separator or an item at <= parent depth).
-    // 2. Remember which items in the block were expanded.
-    // 3. Temporarily collapse the parent so List sees one row during drag.
-    //    (SwiftUI's onMove already received the source/dest from the gesture,
-    //    so we just move the whole block to the correct position here.)
-    // 4. Remove the block from its current position, insert at destination,
-    //    restore all previously-expanded states.
-    //
-    // `from` and `to` are the IndexSet / Int that SwiftUI's .onMove provides,
-    // which refer to the VISIBLE flat list indices (all items, including
-    // collapsed children that are hidden from view but still in the array).
+    // Moves the dragged item + its entire subtree to the destination.
+    // Restores all collapse states after the move.
 
     func moveWithChildren(from source: IndexSet, to destination: Int) {
         guard let sourceIndex = source.first else { return }
@@ -110,9 +148,10 @@ final class ListEditorState {
 
         let parent = file.listItems[sourceIndex]
 
-        // Separators move as single rows — plain move.
+        // Separators move as single rows.
         if parent.isSeparator {
             file.listItems.move(fromOffsets: source, toOffset: destination)
+            restoreAfterDrag()
             onSave()
             return
         }
@@ -127,29 +166,19 @@ final class ListEditorState {
         }
         let blockSize = blockEnd - sourceIndex
 
-        // If it is just one item (no children), plain move.
+        // Single item — plain move.
         if blockSize == 1 {
             file.listItems.move(fromOffsets: source, toOffset: destination)
+            restoreAfterDrag()
             onSave()
             return
         }
 
-        // Remember original collapse states of every item in the block.
-        var wasExpanded: [UUID: Bool] = [:]
-        for i in sourceIndex ..< blockEnd {
-            wasExpanded[file.listItems[i].id] = !file.listItems[i].isCollapsed
-        }
-
         // Extract the block.
         let block = Array(file.listItems[sourceIndex ..< blockEnd])
-
-        // Remove block from array.
         file.listItems.removeSubrange(sourceIndex ..< blockEnd)
 
-        // Adjust destination index after removal.
-        // SwiftUI passes destination relative to the ORIGINAL array.
-        // After removing `blockSize` items starting at `sourceIndex`,
-        // items that were after the block shift left by `blockSize`.
+        // Adjust destination after removal.
         var insertAt: Int
         if destination > sourceIndex {
             insertAt = destination - blockSize
@@ -158,12 +187,12 @@ final class ListEditorState {
         }
         insertAt = max(0, min(insertAt, file.listItems.count))
 
-        // Re-insert block, restoring each item's collapse state.
-        for (offset, var item) in block.enumerated() {
-            item.isCollapsed = !(wasExpanded[item.id] ?? true)
+        for (offset, item) in block.enumerated() {
             file.listItems.insert(item, at: insertAt + offset)
         }
 
+        // Restore collapse states AFTER repositioning.
+        restoreAfterDrag()
         onSave()
     }
 

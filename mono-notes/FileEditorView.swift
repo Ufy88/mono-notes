@@ -22,17 +22,11 @@ enum EditorNotification {
 }
 
 // MARK: - FocusRequest
-// Wraps a target item ID with a unique token so repeated requests
-// for the same item still trigger .task(id:).
 
 struct FocusRequest: Equatable {
     let itemID: UUID
     let token: UUID
-
-    init(itemID: UUID) {
-        self.itemID = itemID
-        self.token = UUID()
-    }
+    init(itemID: UUID) { self.itemID = itemID; self.token = UUID() }
 }
 
 // MARK: - Keyboard visibility observer
@@ -65,7 +59,6 @@ final class KeyboardObserver: ObservableObject {
 struct FileEditorView: View {
     @EnvironmentObject var store: AppStore
     @StateObject private var keyboard = KeyboardObserver()
-    // ListEditorState is @Observable — use @State, not @StateObject.
     @State private var listState = ListEditorState()
 
     let initialFile: FileItem
@@ -77,7 +70,6 @@ struct FileEditorView: View {
     @State private var keyboardDismissed: Bool = false
     @State private var noteEditorFocusRequest: Bool = false
     @State private var noteTitleFocused: Bool = false
-
     @State private var focusRequest: FocusRequest? = nil
 
     private var focusedItemID: UUID? {
@@ -108,9 +100,7 @@ struct FileEditorView: View {
                         noteEditorFocusRequest = true
                     } else {
                         let id = listState.focusedItemID ?? file.listItems.first(where: { !$0.isSeparator })?.id
-                        if let id {
-                            focusRequest = FocusRequest(itemID: id)
-                        }
+                        if let id { focusRequest = FocusRequest(itemID: id) }
                     }
                 } label: {
                     Image(systemName: "keyboard")
@@ -233,7 +223,16 @@ struct FileEditorView: View {
                                 focusRequest = FocusRequest(itemID: blankID)
                             },
                             onDismissKeyboard: { keyboardDismissed = true; KeyboardObserver.dismiss() },
-                            onChange: { save() }
+                            onChange: { save() },
+                            onDragBegan: {
+                                // Fires the moment the user lifts and starts dragging this row.
+                                // Sync file into listState first so collapseForDrag works on
+                                // the latest data, then push the collapsed version back.
+                                listState.file = file
+                                listState.collapseForDrag(sourceIndex: idx)
+                                file = listState.file
+                                save()
+                            }
                         )
                         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
                         .listRowSeparator(.hidden)
@@ -241,8 +240,6 @@ struct FileEditorView: View {
                 }
             }
             .onMove { from, to in
-                // moveWithChildren moves the whole subtree (parent + deeper items).
-                // After the move, sync file back from listState so UI stays in sync.
                 listState.file = file
                 listState.moveWithChildren(from: from, to: to)
                 file = listState.file

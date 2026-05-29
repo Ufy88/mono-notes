@@ -67,14 +67,6 @@ final class AccessoryBar: UIView {
 }
 
 // MARK: - HideReorderHandlesProxy
-// Hides the three-line reorder control injected by UITableView in edit mode.
-// Drag-reorder remains fully functional; the handle is just invisible.
-//
-// Two-pronged approach (no flash):
-// 1. Subscriber on UITableView.mn_willDisplayCell — zeroes alpha the moment
-//    a cell appears, before the user can see the handle.
-// 2. CADisplayLink at 60 fps — catches handles that reappear after a
-//    reorder animation or mid-scroll.
 
 struct HideReorderHandlesProxy: UIViewRepresentable {
     func makeUIView(context: Context) -> HideHandlesView { HideHandlesView() }
@@ -299,6 +291,10 @@ struct OutlineItemRow: View {
     let onInsertSeparator: () -> Void
     let onDismissKeyboard: () -> Void
     let onChange: () -> Void
+    // Called the moment the user begins dragging this row.
+    // Used to collapse foreign children before the drag gesture
+    // commits so they can't be accidentally adopted.
+    let onDragBegan: () -> Void
 
     @State private var textHeight: CGFloat = 26
 
@@ -348,6 +344,13 @@ struct OutlineItemRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 1)
         .contentShape(Rectangle())
+        // .onDrag fires when the List drag gesture begins — before .onMove.
+        // We use this to collapse foreign subtrees so the user can't insert
+        // the dragged row between children that belong to another parent.
+        .onDrag {
+            onDragBegan()
+            return NSItemProvider()
+        }
     }
 }
 
@@ -491,7 +494,6 @@ class GrowingTextView: UITextView {
 }
 
 // MARK: - FileItem local extension
-// autoTitle is a legacy alias; displayTitle is the canonical property (Models.swift).
 
 extension FileItem {
     var autoTitle: String { displayTitle }
