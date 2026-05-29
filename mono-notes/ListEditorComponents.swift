@@ -2,7 +2,6 @@ import SwiftUI
 import UIKit
 
 // MARK: - AccessoryBar
-// Flat keyboard toolbar: indent / unindent / separator / dismiss buttons.
 
 final class AccessoryBar: UIView {
     private let stack = UIStackView()
@@ -68,9 +67,13 @@ final class AccessoryBar: UIView {
 }
 
 // MARK: - NoteEditorWrapper
+// isFocused: binding replaces the old .focusNoteEditor Notification.
+// When isFocused flips to true, updateUIView calls becomeFirstResponder
+// and resets the binding to false so it's edge-triggered, not level.
 
 struct NoteEditorWrapper: UIViewRepresentable {
     @Binding var text: String
+    @Binding var isFocused: Bool
     let onDismiss: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -90,14 +93,16 @@ struct NoteEditorWrapper: UIViewRepresentable {
                       separatorSel: #selector(Coordinator.noop), dismissSel: #selector(Coordinator.tappedDismiss))
         tv.inputAccessoryView = bar
         context.coordinator.textView = tv
-        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.focusFromFAB),
-                                               name: .focusNoteEditor, object: nil)
         return tv
     }
 
     func updateUIView(_ tv: UITextView, context: Context) {
         context.coordinator.parent = self
         if tv.text != text { tv.text = text }
+        if isFocused && !tv.isFirstResponder {
+            tv.becomeFirstResponder()
+            DispatchQueue.main.async { self.isFocused = false }
+        }
     }
 
     class Coordinator: NSObject, UITextViewDelegate {
@@ -106,7 +111,6 @@ struct NoteEditorWrapper: UIViewRepresentable {
         init(parent: NoteEditorWrapper) { self.parent = parent }
         func textViewDidChange(_ tv: UITextView) { parent.text = tv.text }
         @objc func tappedDismiss() { parent.onDismiss() }
-        @objc func focusFromFAB() { textView?.becomeFirstResponder() }
         @objc func noop() {}
     }
 }
@@ -208,7 +212,6 @@ struct OutlineItemRow: View {
             if item.depth > 0 {
                 Color.clear.frame(width: indentWidth, height: 1)
             }
-
             Text("\u{2022}")
                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
@@ -252,6 +255,9 @@ struct OutlineItemRow: View {
 }
 
 // MARK: - OutlineTextView
+// Focus is driven purely by isActive (set via focusedItemID in ListEditorState).
+// updateUIView calls becomeFirstResponder when isActive flips to true.
+// The .focusItem NotificationCenter observer has been removed.
 
 struct OutlineTextView: UIViewRepresentable {
     @Binding var text: String
@@ -286,7 +292,6 @@ struct OutlineTextView: UIViewRepresentable {
         tv.coordinator = context.coordinator
         tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tv.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
         let bar = AccessoryBar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
         bar.configure(isList: true, target: context.coordinator,
                       indentSel: #selector(Coordinator.tappedIndent),
@@ -294,21 +299,12 @@ struct OutlineTextView: UIViewRepresentable {
                       separatorSel: #selector(Coordinator.tappedSeparator),
                       dismissSel: #selector(Coordinator.tappedDismiss))
         tv.inputAccessoryView = bar
-
-        NotificationCenter.default.addObserver(
-            context.coordinator,
-            selector: #selector(Coordinator.handleFocusItem(_:)),
-            name: .focusItem,
-            object: nil
-        )
-
         return tv
     }
 
     func updateUIView(_ tv: GrowingTextView, context: Context) {
         context.coordinator.parent = self
         tv.coordinator = context.coordinator
-
         if tv.text != text { tv.text = text }
 
         let paraStyle = NSMutableParagraphStyle()
@@ -321,7 +317,6 @@ struct OutlineTextView: UIViewRepresentable {
             : [.foregroundColor: UIColor.label,
                .font: UIFont.monospacedSystemFont(ofSize: 13, weight: .medium),
                .paragraphStyle: paraStyle]
-
         let newAttr = NSAttributedString(string: tv.text, attributes: attrs)
         if tv.attributedText != newAttr { tv.attributedText = newAttr }
 
@@ -344,19 +339,10 @@ struct OutlineTextView: UIViewRepresentable {
         }
         func textViewDidBeginEditing(_ tv: UITextView) { parent.onFocus() }
 
-        @objc func handleFocusItem(_ note: Notification) {
-            guard let id = note.userInfo?["id"] as? UUID,
-                  id == parent.itemID,
-                  let tv = textView,
-                  !tv.isFirstResponder
-            else { return }
-            tv.becomeFirstResponder()
-        }
-
-        @objc func tappedIndent() { parent.onIndent() }
-        @objc func tappedUnindent() { parent.onUnindent() }
-        @objc func tappedDismiss() { parent.onDismissKeyboard() }
-        @objc func tappedSeparator() { parent.onInsertSeparator() }
+        @objc func tappedIndent()     { parent.onIndent() }
+        @objc func tappedUnindent()   { parent.onUnindent() }
+        @objc func tappedDismiss()    { parent.onDismissKeyboard() }
+        @objc func tappedSeparator()  { parent.onInsertSeparator() }
     }
 }
 
@@ -378,8 +364,7 @@ class GrowingTextView: UITextView {
     private func reportHeight() {
         guard bounds.width > 0 else { return }
         let fittingSize = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
-        let h = max(fittingSize.height, 32)
-        coordinator?.parent.onHeightChange(h)
+        coordinator?.parent.onHeightChange(max(fittingSize.height, 32))
     }
 
     override func deleteBackward() {
@@ -387,44 +372,28 @@ class GrowingTextView: UITextView {
             guard let r = selectedTextRange else { return false }
             return r.isEmpty && offset(from: beginningOfDocument, to: r.start) == 0
         }()
-
         if atStart && text.isEmpty {
-            let separatorDeleted = coordinator?.parent.onDeleteSeparatorAbove() ?? false
-            if !separatorDeleted {
-                coordinator?.parent.onUnindent()
-            }
+            let sepDeleted = coordinator?.parent.onDeleteSeparatorAbove() ?? false
+            if !sepDeleted { coordinator?.parent.onUnindent() }
             return
         }
-
-        if atStart && !text.isEmpty {
-            coordinator?.parent.onUnindent()
-        }
-
+        if atStart && !text.isEmpty { coordinator?.parent.onUnindent() }
         if !text.isEmpty { super.deleteBackward() }
     }
 }
 
 // MARK: - HideReorderHandlesProxy
-// UIViewRepresentable that finds the UITableView, then on every layout pass
-// walks all visible cells and sets alpha = 0 on UITableViewCellReorderControl.
-// editMode stays .active so SwiftUI's .onMove still works — handles are
-// simply invisible. The drag gesture itself remains fully functional.
 
 struct HideReorderHandlesProxy: UIViewRepresentable {
-
-    func makeUIView(context: Context) -> HideHandlesView {
-        HideHandlesView()
-    }
-
+    func makeUIView(context: Context) -> HideHandlesView { HideHandlesView() }
     func updateUIView(_ uiView: HideHandlesView, context: Context) {
         DispatchQueue.main.async {
-            guard let tableView = uiView.nearestAncestor(ofType: UITableView.self) else { return }
-            uiView.attach(to: tableView)
+            guard let tv = uiView.nearestAncestor(ofType: UITableView.self) else { return }
+            uiView.attach(to: tv)
         }
     }
 }
 
-// UIView subclass that observes the table via display-link and hides handles.
 final class HideHandlesView: UIView {
     private weak var tableView: UITableView?
     private var displayLink: CADisplayLink?

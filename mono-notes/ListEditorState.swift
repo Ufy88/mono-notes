@@ -5,17 +5,21 @@ import Combine
 // ObservableObject that owns all list-editing mutations:
 // item insertion, deletion, indent/unindent, separator handling,
 // focus routing, and persistence via AppStore.
-// FileEditorView holds a @StateObject of this type and delegates
-// every list mutation to it.
+//
+// Focus is state-driven throughout:
+//   - focusedItemID drives isActive on OutlineTextView via updateUIView
+//   - noteFocused drives isFocused on NoteEditorWrapper
+// No NotificationCenter posts for focus — only .sidebarWillOpen remains
+// as a cross-component notification with no common SwiftUI ancestor.
 
 final class ListEditorState: ObservableObject {
 
-    // Published so FileEditorView re-renders on focus / dismiss changes
     @Published var focusedItemID: UUID? = nil
     @Published var titleFocused: Bool = false
     @Published var keyboardDismissed: Bool = false
+    /// Drives NoteEditorWrapper.isFocused; replaces .focusNoteEditor notification.
+    @Published var noteFocused: Bool = false
 
-    // Injected by FileEditorView; mutated on every save
     var file: FileItem
     private let tab: AppTab
     private let store: AppStore
@@ -58,10 +62,9 @@ final class ListEditorState: ObservableObject {
         let prevID = prevVisibleID(before: idx, visible: visible)
         file.listItems.remove(at: idx)
         save()
-        if let pid = prevID {
-            focusedItemID = pid
-            NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": pid])
-        }
+        // Setting focusedItemID is sufficient — OutlineTextView.updateUIView
+        // calls becomeFirstResponder when isActive flips to true.
+        focusedItemID = prevID
     }
 
     // MARK: - Separator
@@ -73,8 +76,8 @@ final class ListEditorState: ObservableObject {
         let itemID = file.listItems[idx].id
         file.listItems.remove(at: idx - 1)
         save()
+        // State-driven focus — no notification needed.
         focusedItemID = itemID
-        NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": itemID])
         return true
     }
 
@@ -89,13 +92,8 @@ final class ListEditorState: ObservableObject {
 
     // MARK: - Check / Collapse
 
-    func toggleCheck(at idx: Int) {
-        file.listItems[idx].checked.toggle(); save()
-    }
-
-    func toggleCollapse(at idx: Int) {
-        file.listItems[idx].isCollapsed.toggle(); save()
-    }
+    func toggleCheck(at idx: Int) { file.listItems[idx].checked.toggle(); save() }
+    func toggleCollapse(at idx: Int) { file.listItems[idx].isCollapsed.toggle(); save() }
 
     // MARK: - Move
 
@@ -146,6 +144,7 @@ final class ListEditorState: ObservableObject {
     func sidebarWillOpen() {
         keyboardDismissed = true
         focusedItemID = nil
+        noteFocused = false
     }
 
     // MARK: - Persistence
@@ -155,7 +154,7 @@ final class ListEditorState: ObservableObject {
         store.updateFile(file, tab: tab)
     }
 
-    // MARK: - Private helpers
+    // MARK: - Private
 
     private func prevVisibleID(before idx: Int, visible: Set<UUID>) -> UUID? {
         guard idx > 0 else { return nil }

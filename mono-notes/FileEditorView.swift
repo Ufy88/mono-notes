@@ -28,11 +28,10 @@ final class KeyboardObserver: ObservableObject {
 }
 
 // MARK: - Notifications
+// Only cross-component notifications that have no common SwiftUI ancestor.
 
 extension Notification.Name {
-    static let focusNoteEditor  = Notification.Name("focusNoteEditor")
-    static let sidebarWillOpen  = Notification.Name("sidebarWillOpen")
-    static let focusItem        = Notification.Name("focusItem")
+    static let sidebarWillOpen = Notification.Name("sidebarWillOpen")
 }
 
 // MARK: - FileEditorView
@@ -54,11 +53,6 @@ struct FileEditorView: View {
         self.initialFile = file
         self.tab = tab
         _file = State(initialValue: file)
-        // ListEditorState needs store at init-time; injected below via onAppear
-        // so we bootstrap with a temporary store reference using a dummy —
-        // the real store is wired in .onAppear via listState.wireStore().
-        // Actually Swift requires concrete init here, so we create the object
-        // with the file; store is patched in onAppear.
         _listState = StateObject(wrappedValue: ListEditorState(
             file: file, tab: tab, store: AppStore.shared
         ))
@@ -86,20 +80,19 @@ struct FileEditorView: View {
         .onReceive(NotificationCenter.default.publisher(for: .sidebarWillOpen)) { _ in
             listState.sidebarWillOpen()
         }
-        // Keep file in sync when listState mutates it
-        .onReceive(listState.$file.publisher.prefix(1).ignoreOutput().merge(
-            with: listState.objectWillChange.map { _ in () }
-        )) { _ in
+        .onReceive(listState.objectWillChange) { _ in
             file = listState.file
         }
     }
 
     // MARK: - FAB
+    // For notes: set noteFocused = true — NoteEditorWrapper observes the binding.
+    // For lists: refocus the last known item.
 
     private var fabButton: some View {
         Button {
             if file.kind == .note {
-                NotificationCenter.default.post(name: .focusNoteEditor, object: nil)
+                listState.noteFocused = true
             } else {
                 let id = listState.focusedItemID ?? file.listItems.first(where: { !$0.isSeparator })?.id
                 if let id { listState.refocus(id: id) }
@@ -132,6 +125,7 @@ struct FileEditorView: View {
     }
 
     // MARK: - Note editor
+    // isFocused binding replaces the old .focusNoteEditor notification.
 
     private var noteEditor: some View {
         NoteEditorWrapper(
@@ -139,6 +133,7 @@ struct FileEditorView: View {
                 get: { file.body },
                 set: { file.body = $0; file.updatedAt = Date(); store.updateFile(file, tab: tab) }
             ),
+            isFocused: $listState.noteFocused,
             onDismiss: { listState.dismissKeyboard() }
         )
     }
@@ -206,8 +201,7 @@ struct FileEditorView: View {
             .onMove { from, to in listState.moveItems(from: from, to: to) }
 
             Color.clear
-                .frame(maxWidth: .infinity)
-                .frame(height: 300)
+                .frame(maxWidth: .infinity).frame(height: 300)
                 .contentShape(Rectangle())
                 .onTapGesture { listState.refocusLast() }
                 .listRowInsets(EdgeInsets())
