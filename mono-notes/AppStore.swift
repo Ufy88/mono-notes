@@ -1,5 +1,8 @@
 import Foundation
 import Combine
+import os.log
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "mono-notes", category: "persistence")
 
 final class AppStore: ObservableObject {
     @Published var data: AppData = AppData()
@@ -82,11 +85,11 @@ final class AppStore: ObservableObject {
         if let pid = parentID {
             var r = roots(for: tab)
             r.insertChild(child, intoFolderID: pid, afterID: nil)
-            setRoots(r, for: tab)
+            setRoots(r, for: tab) // setRoots calls saveImmediately()
         } else {
             if tab == .notes { data.noteRoots.insert(child, at: 0) }
             else { data.listRoots.insert(child, at: 0) }
-            saveImmediately()
+            saveImmediately() // explicit save for root-level insert (no setRoots used here)
         }
         return folder
     }
@@ -191,16 +194,27 @@ final class AppStore: ObservableObject {
     func save() { saveImmediately() }
 
     private func writeToDisk() {
-        if let encoded = try? JSONEncoder().encode(data) {
-            try? encoded.write(to: saveURL, options: .atomic)
+        do {
+            let encoded = try JSONEncoder().encode(data)
+            try encoded.write(to: saveURL, options: .atomic)
+        } catch EncodingError.invalidValue(let value, let ctx) {
+            logger.error("AppStore encode failed: \(ctx.debugDescription) — value: \(String(describing: value))")
+        } catch {
+            logger.error("AppStore write failed: \(error.localizedDescription) — path: \(self.saveURL.path)")
         }
     }
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: saveURL.path),
-              let raw = try? Data(contentsOf: saveURL),
-              let decoded = try? JSONDecoder().decode(AppData.self, from: raw)
-        else { return }
-        data = decoded
+        guard FileManager.default.fileExists(atPath: saveURL.path) else { return }
+        do {
+            let raw = try Data(contentsOf: saveURL)
+            data = try JSONDecoder().decode(AppData.self, from: raw)
+        } catch DecodingError.keyNotFound(let key, let ctx) {
+            logger.error("AppStore decode: missing key '\(key.stringValue)' — \(ctx.debugDescription)")
+        } catch DecodingError.typeMismatch(_, let ctx) {
+            logger.error("AppStore decode: type mismatch — \(ctx.debugDescription)")
+        } catch {
+            logger.error("AppStore load failed: \(error.localizedDescription)")
+        }
     }
 }
