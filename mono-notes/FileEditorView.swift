@@ -77,9 +77,6 @@ struct FileEditorView: View {
     @State private var noteEditorFocusRequest: Bool = false
     @State private var noteTitleFocused: Bool = false
 
-    // Replaces asyncAfter(0.05) nil-cycling hacks.
-    // Setting this triggers .task(id: focusRequest) which fires after
-    // the current SwiftUI render pass — safe and deterministic.
     @State private var focusRequest: FocusRequest? = nil
 
     private var focusedItemID: UUID? {
@@ -103,7 +100,6 @@ struct FileEditorView: View {
             }
             .background(Color(.systemBackground))
 
-            // smooth .easeInOut(0.15) — removes the lag on appear/disappear
             if !keyboard.isVisible {
                 Button {
                     keyboardDismissed = false
@@ -133,8 +129,6 @@ struct FileEditorView: View {
         .task(id: focusRequest) {
             guard let req = focusRequest else { return }
             listState.focusedItemID = nil
-            // One await suspends until after SwiftUI commits the nil,
-            // then we set the real target — no arbitrary timer needed.
             await Task.yield()
             listState.focusedItemID = req.itemID
         }
@@ -198,7 +192,7 @@ struct FileEditorView: View {
             Section {
                 TitleTextField(
                     text: Binding(get: { file.title }, set: { file.title = $0; save() }),
-                    placeholder: file.autoTitle,
+                    placeholder: file.displayTitle,
                     requestFocus: $titleFocused,
                     onReturn: {
                         titleFocused = false; keyboardDismissed = false
