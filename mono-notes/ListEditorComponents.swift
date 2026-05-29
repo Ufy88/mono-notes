@@ -67,6 +67,14 @@ final class AccessoryBar: UIView {
 }
 
 // MARK: - HideReorderHandlesProxy
+// Hides the three-line reorder control injected by UITableView in edit mode.
+// Drag-reorder remains fully functional; the handle is just invisible.
+//
+// Two-pronged approach (no flash):
+// 1. Subscriber on UITableView.mn_willDisplayCell — zeroes alpha the moment
+//    a cell appears, before the user can see the handle.
+// 2. CADisplayLink at 15-30 fps — catches handles that reappear after a
+//    reorder animation or mid-scroll.
 
 struct HideReorderHandlesProxy: UIViewRepresentable {
     func makeUIView(context: Context) -> HideHandlesView { HideHandlesView() }
@@ -81,10 +89,23 @@ struct HideReorderHandlesProxy: UIViewRepresentable {
 final class HideHandlesView: UIView {
     private weak var tableView: UITableView?
     private var displayLink: CADisplayLink?
+    private var notificationToken: NSObjectProtocol?
 
     func attach(to tableView: UITableView) {
         guard self.tableView !== tableView else { return }
         self.tableView = tableView
+
+        // Immediate: hide on willDisplay
+        notificationToken = NotificationCenter.default.addObserver(
+            forName: UITableView.mn_willDisplayCell,
+            object: tableView,
+            queue: .main
+        ) { [weak self] note in
+            guard let cell = note.userInfo?["cell"] as? UIView else { return }
+            self?.hideHandles(in: cell)
+        }
+
+        // Fallback: cover reorder-animation frames
         displayLink?.invalidate()
         let link = CADisplayLink(target: self, selector: #selector(tick))
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30)
@@ -93,7 +114,10 @@ final class HideHandlesView: UIView {
     }
 
     @objc private func tick() {
-        tableView?.visibleCells.forEach { hideHandles(in: $0) }
+        guard let tv = tableView else { return }
+        tv.visibleCells.forEach { hideHandles(in: $0) }
+        // Also post mn_willDisplayCell for any newly visible cell
+        tv.mn_postWillDisplayForVisibleCells()
     }
 
     private func hideHandles(in view: UIView) {
@@ -107,7 +131,30 @@ final class HideHandlesView: UIView {
     override func removeFromSuperview() {
         displayLink?.invalidate()
         displayLink = nil
+        if let token = notificationToken {
+            NotificationCenter.default.removeObserver(token)
+        }
+        notificationToken = nil
         super.removeFromSuperview()
+    }
+}
+
+// MARK: - UITableView notification + helper
+
+extension UITableView {
+    /// Posted whenever a cell is about to display so HideHandlesView can
+    /// zero the reorder-handle alpha before it becomes visible.
+    static let mn_willDisplayCell = Notification.Name("mn.tableView.willDisplayCell")
+
+    /// Call to post mn_willDisplayCell for all currently visible cells.
+    func mn_postWillDisplayForVisibleCells() {
+        for cell in visibleCells {
+            NotificationCenter.default.post(
+                name: UITableView.mn_willDisplayCell,
+                object: self,
+                userInfo: ["cell": cell]
+            )
+        }
     }
 }
 
@@ -125,8 +172,6 @@ extension UIView {
 }
 
 // MARK: - NoteEditorWrapper
-// focusRequest: Binding<Bool> replaces the old .focusNoteEditor notification.
-// The parent sets it to true; the wrapper calls becomeFirstResponder and resets it.
 
 struct NoteEditorWrapper: UIViewRepresentable {
     @Binding var text: String
@@ -260,7 +305,7 @@ struct OutlineItemRow: View {
     let onDismissKeyboard: () -> Void
     let onChange: () -> Void
 
-    @State private var textHeight: CGFloat = 32
+    @State private var textHeight: CGFloat = 26
 
     private var indentWidth: CGFloat { CGFloat(item.depth) * 20 }
     private let bulletWidth: CGFloat = 22
@@ -338,7 +383,8 @@ struct OutlineTextView: UIViewRepresentable {
         tv.spellCheckingType = .no
         tv.isScrollEnabled = false
         tv.backgroundColor = .clear
-        tv.textContainerInset = UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+        // Reduced top/bottom inset: 6 -> 3 to tighten spacing between rows.
+        tv.textContainerInset = UIEdgeInsets(top: 3, left: 0, bottom: 3, right: 0)
         tv.textContainer.lineFragmentPadding = 0
         tv.textContainer.widthTracksTextView = true
         tv.returnKeyType = .next
@@ -353,8 +399,6 @@ struct OutlineTextView: UIViewRepresentable {
                       separatorSel: #selector(Coordinator.tappedSeparator),
                       dismissSel: #selector(Coordinator.tappedDismiss))
         tv.inputAccessoryView = bar
-        // focusItem stays as Notification: targets a specific UITextView inside List cell.
-        // Typed via EditorNotification enum.
         NotificationCenter.default.addObserver(
             context.coordinator,
             selector: #selector(Coordinator.handleFocusItem(_:)),
@@ -433,7 +477,7 @@ class GrowingTextView: UITextView {
     private func reportHeight() {
         guard bounds.width > 0 else { return }
         let fittingSize = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
-        let h = max(fittingSize.height, 32)
+        let h = max(fittingSize.height, 26)
         coordinator?.parent.onHeightChange(h)
     }
 
@@ -452,10 +496,9 @@ class GrowingTextView: UITextView {
     }
 }
 
-// MARK: - FileItem extensions
+// MARK: - FileItem local extension
+// autoTitle is a legacy alias; displayTitle is the canonical property (Models.swift).
 
 extension FileItem {
-    var autoTitle: String {
-        listItems.first(where: { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty && !$0.isSeparator })?.text ?? "Untitled"
-    }
+    var autoTitle: String { displayTitle }
 }
