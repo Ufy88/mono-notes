@@ -3,9 +3,6 @@ import UIKit
 import Combine
 
 // MARK: - EditorNotification
-// Typed enum replacing stringly-typed Notification.Name.
-// focusItem stays as a notification because it targets a specific UIKit
-// UITextView inside a List cell — @FocusState cannot reach into UIViewRepresentable.
 
 enum EditorNotification {
     case focusItem(UUID)
@@ -58,16 +55,13 @@ struct FileEditorView: View {
 
     let initialFile: FileItem
     let tab: AppTab
-    /// Passed from the parent (e.g. RootView / SidebarView).
-    /// When it flips true the editor dismisses keyboard and clears focus.
     @Binding var sidebarIsOpen: Bool
 
     @State private var file: FileItem
     @State private var titleFocused: Bool = false
     @State private var keyboardDismissed: Bool = false
-    /// Replaces the old .focusNoteEditor notification — flipping to true
-    /// tells NoteEditorWrapper to becomeFirstResponder.
     @State private var noteEditorFocusRequest: Bool = false
+    @State private var noteTitleFocused: Bool = false
 
     private var focusedItemID: UUID? {
         get { listState.focusedItemID }
@@ -90,6 +84,7 @@ struct FileEditorView: View {
             }
             .background(Color(.systemBackground))
 
+            // 3.3: smooth .easeInOut(0.15) — removes the lag on appear/disappear
             if !keyboard.isVisible {
                 Button {
                     keyboardDismissed = false
@@ -115,15 +110,14 @@ struct FileEditorView: View {
                 }
                 .padding(.trailing, 16)
                 .padding(.bottom, 16)
-                .transition(.opacity)
+                .transition(.opacity.animation(.easeInOut(duration: 0.15)))
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: keyboard.isVisible)
+        .animation(.easeInOut(duration: 0.15), value: keyboard.isVisible)
         .onAppear {
             file = store.findFile(id: initialFile.id) ?? initialFile
             syncState()
         }
-        // Replaces .onReceive(.sidebarWillOpen)
         .onChange(of: sidebarIsOpen) { _, isOpen in
             if isOpen {
                 keyboardDismissed = true
@@ -146,15 +140,33 @@ struct FileEditorView: View {
     }
 
     // MARK: - Note editor
+    // 3.2: title field above body. Optional — placeholder shows displayTitle fallback.
     private var noteEditor: some View {
-        NoteEditorWrapper(
-            text: Binding(
-                get: { file.body },
-                set: { file.body = $0; file.updatedAt = Date(); store.updateFile(file, tab: tab) }
-            ),
-            focusRequest: $noteEditorFocusRequest,
-            onDismiss: { keyboardDismissed = true; KeyboardObserver.dismiss() }
-        )
+        VStack(spacing: 0) {
+            TitleTextField(
+                text: Binding(get: { file.title }, set: { file.title = $0; save() }),
+                placeholder: file.displayTitle,
+                requestFocus: $noteTitleFocused,
+                onReturn: {
+                    noteTitleFocused = false
+                    keyboardDismissed = false
+                    noteEditorFocusRequest = true
+                },
+                onDismiss: { keyboardDismissed = true; KeyboardObserver.dismiss() }
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+
+            NoteEditorWrapper(
+                text: Binding(
+                    get: { file.body },
+                    set: { file.body = $0; file.updatedAt = Date(); store.updateFile(file, tab: tab) }
+                ),
+                focusRequest: $noteEditorFocusRequest,
+                onDismiss: { keyboardDismissed = true; KeyboardObserver.dismiss() }
+            )
+        }
     }
 
     // MARK: - List editor

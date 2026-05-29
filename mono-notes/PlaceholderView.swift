@@ -9,7 +9,7 @@ struct PlaceholderView: View {
             VStack {
                 HStack {
                     Button { withAnimation { sidebarOpen.toggle() } } label: {
-                        Image(systemName: "line.3.horizontal")
+                        Image(systemName: "sidebar.left")
                             .font(.system(size: 18))
                             .foregroundStyle(.primary)
                     }
