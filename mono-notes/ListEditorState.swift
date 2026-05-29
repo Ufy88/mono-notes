@@ -88,14 +88,15 @@ final class ListEditorState {
     }
 
     // MARK: Collapse for drag
-    // Called the moment the user picks up a row (via .onDrag).
-    // Collapses:
-    //   a) Own subtree of the dragged item (its children).
-    //   b) Every other item in the list that has depth > dragged.depth
-    //      — these are children of OTHER parents and must not be
-    //      accessible as drop targets while the drag is in flight,
-    //      otherwise the dragged item can slip between them and
-    //      silently steal their parent role.
+    //
+    // Called the moment the user picks up a row.
+    //
+    // Strategy: hide ALL items that have depth > draggedDepth by collapsing
+    // their nearest visible ancestor whose depth == draggedDepth.
+    // This means that during the drag the only visible rows are those with
+    // depth <= draggedDepth, so the user can only drop between peers or
+    // shallower items — never inside a foreign subtree.
+    //
     // Saves original expanded state in dragExpandSnapshot so
     // restoreAfterDrag() can undo everything.
 
@@ -105,18 +106,34 @@ final class ListEditorState {
 
         dragExpandSnapshot = [:]
 
+        // Record current expanded state for every non-separator item.
         for i in file.listItems.indices {
             let item = file.listItems[i]
             guard !item.isSeparator else { continue }
-
-            // Record current state for every non-separator item.
             dragExpandSnapshot[item.id] = !item.isCollapsed
+        }
 
-            // Collapse:
-            // - dragged item's own children (depth > draggedDepth, consecutive after sourceIndex)
-            // - any other item with depth > draggedDepth (foreign children)
-            if i != sourceIndex && item.depth > draggedDepth {
+        // Collapse every non-separator item whose depth >= draggedDepth
+        // (except the dragged item itself) that has any child with
+        // depth > draggedDepth directly underneath it.
+        // Simpler and more robust: just collapse ALL items with
+        // depth >= draggedDepth that are not the dragged item and that
+        // have at least one direct or indirect child deeper than draggedDepth.
+        // This guarantees no row with depth > draggedDepth is visible.
+        for i in file.listItems.indices {
+            let item = file.listItems[i]
+            guard !item.isSeparator, i != sourceIndex else { continue }
+
+            if item.depth > draggedDepth {
+                // Direct foreign child — collapse it too so it disappears.
                 file.listItems[i].isCollapsed = true
+            } else if item.depth == draggedDepth {
+                // Peer: collapse it if it has deeper children, so those
+                // children are hidden and cannot become accidental drop targets
+                // between their own siblings.
+                if file.hasChildren(after: item) {
+                    file.listItems[i].isCollapsed = true
+                }
             }
         }
 
@@ -139,46 +156,50 @@ final class ListEditorState {
     }
 
     // MARK: Move with children
+    //
     // Moves the dragged item + its entire subtree to the destination.
+    //
+    // Key invariant enforced here: the depth of the moved block is clamped
+    // so it can never land inside a foreign subtree.
+    //
+    // "Allowed depth at destination" = depth of the item immediately above
+    // the insertion point (or 0 if there is nothing above).  The dragged
+    // block may be inserted at any depth UP TO that value — but never deeper,
+    // because that would make it a child of a row it was not originally
+    // a child of.  We clamp block depth DOWN to allowedDepth when needed,
+    // shifting all items in the block by the same delta.
+    //
     // Restores all collapse states after the move.
 
     func moveWithChildren(from source: IndexSet, to destination: Int) {
         guard let sourceIndex = source.first else { return }
         guard sourceIndex < file.listItems.count else { return }
 
-        let parent = file.listItems[sourceIndex]
+        let draggedItem = file.listItems[sourceIndex]
 
-        // Separators move as single rows.
-        if parent.isSeparator {
+        // Separators move as single rows with no depth logic.
+        if draggedItem.isSeparator {
             file.listItems.move(fromOffsets: source, toOffset: destination)
             restoreAfterDrag()
             onSave()
             return
         }
 
-        // Collect the subtree: parent + deeper consecutive items.
+        // Collect the subtree: the dragged item + all consecutive deeper items.
         var blockEnd = sourceIndex + 1
         while blockEnd < file.listItems.count {
             let item = file.listItems[blockEnd]
             if item.isSeparator { break }
-            if item.depth <= parent.depth { break }
+            if item.depth <= draggedItem.depth { break }
             blockEnd += 1
         }
         let blockSize = blockEnd - sourceIndex
-
-        // Single item — plain move.
-        if blockSize == 1 {
-            file.listItems.move(fromOffsets: source, toOffset: destination)
-            restoreAfterDrag()
-            onSave()
-            return
-        }
-
-        // Extract the block.
         let block = Array(file.listItems[sourceIndex ..< blockEnd])
+
+        // Remove the block from the list.
         file.listItems.removeSubrange(sourceIndex ..< blockEnd)
 
-        // Adjust destination after removal.
+        // Compute the actual insertion index after removal.
         var insertAt: Int
         if destination > sourceIndex {
             insertAt = destination - blockSize
@@ -187,7 +208,33 @@ final class ListEditorState {
         }
         insertAt = max(0, min(insertAt, file.listItems.count))
 
-        for (offset, item) in block.enumerated() {
+        // --- Depth clamping ---
+        // Look at the item immediately above the insertion point (if any).
+        // That item's depth is the maximum allowed depth for the block root.
+        // If the dragged item's original depth exceeds that, shift the whole
+        // block down so the root sits exactly at allowedDepth.
+        // This prevents a parent from landing between foreign children.
+        let allowedDepth: Int
+        if insertAt == 0 {
+            allowedDepth = 0
+        } else {
+            let above = file.listItems[insertAt - 1]
+            allowedDepth = above.isSeparator ? 0 : above.depth
+        }
+
+        let rootDepth = draggedItem.depth
+        let depthDelta = min(0, allowedDepth - rootDepth)  // only clamp down, never push up
+        // (If rootDepth <= allowedDepth the delta is 0 and nothing changes.)
+
+        var adjustedBlock = block
+        if depthDelta != 0 {
+            for i in adjustedBlock.indices {
+                adjustedBlock[i].depth = max(0, adjustedBlock[i].depth + depthDelta)
+            }
+        }
+
+        // Insert the (possibly depth-adjusted) block at the target position.
+        for (offset, item) in adjustedBlock.enumerated() {
             file.listItems.insert(item, at: insertAt + offset)
         }
 
