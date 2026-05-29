@@ -244,7 +244,7 @@ struct TitleTextField: UIViewRepresentable {
             return true
         }
         func textFieldShouldReturn(_ tf: UITextField) -> Bool { tf.resignFirstResponder(); parent.onReturn(); return false }
-        @objc func tappedDismiss() { field?.resignFirstResponder(); parent.onDismiss() }
+        @objc func tappedDismiss() { parent.onDismiss() }
         @objc func noop() {}
     }
 }
@@ -267,7 +267,7 @@ struct OutlineItemRow: View {
     let onChange: () -> Void
     let onDragBegan: () -> Void
 
-    @State private var textHeight: CGFloat = 22
+    @State private var textHeight: CGFloat = 20
 
     private var indentWidth: CGFloat { CGFloat(item.depth) * 20 }
     private let bulletWidth: CGFloat = 22
@@ -282,7 +282,7 @@ struct OutlineItemRow: View {
                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
                 .frame(width: bulletWidth, alignment: .center)
-                .padding(.top, 2)
+                .padding(.top, 1)
                 .onTapGesture { onCheck() }
             OutlineTextView(
                 text: $item.text,
@@ -306,15 +306,13 @@ struct OutlineItemRow: View {
                 Button(action: onToggleCollapse) {
                     Image(systemName: item.isCollapsed ? "chevron.right" : "chevron.down")
                         .font(.system(size: 10, weight: .medium)).foregroundStyle(.quaternary)
-                        .frame(width: chevronWidth, height: 24).contentShape(Rectangle())
-                }.buttonStyle(.plain).padding(.top, 1)
+                        .frame(width: chevronWidth, height: 20).contentShape(Rectangle())
+                }.buttonStyle(.plain)
             } else {
                 Color.clear.frame(width: chevronWidth, height: 1)
             }
         }
         .padding(.horizontal, 16)
-        // Reduced from 1 to 0 — spacing between rows comes only from
-        // textContainerInset in GrowingTextView (top:2, bottom:2).
         .padding(.vertical, 0)
         .contentShape(Rectangle())
         .onDrag {
@@ -351,8 +349,8 @@ struct OutlineTextView: UIViewRepresentable {
         tv.spellCheckingType = .no
         tv.isScrollEnabled = false
         tv.backgroundColor = .clear
-        // Reduced vertical inset from 3 to 2 for tighter row spacing.
-        tv.textContainerInset = UIEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
+        // Top/bottom inset: 1pt each — tight single-line rows, 2pt total air per row.
+        tv.textContainerInset = UIEdgeInsets(top: 1, left: 0, bottom: 1, right: 0)
         tv.textContainer.lineFragmentPadding = 0
         tv.textContainer.widthTracksTextView = true
         tv.returnKeyType = .next
@@ -381,7 +379,7 @@ struct OutlineTextView: UIViewRepresentable {
         tv.coordinator = context.coordinator
         if tv.text != text { tv.text = text }
         let paraStyle = NSMutableParagraphStyle()
-        paraStyle.lineSpacing = 1
+        paraStyle.lineSpacing = 0
         let attrs: [NSAttributedString.Key: Any] = isChecked
             ? [.strikethroughStyle: NSUnderlineStyle.single.rawValue,
                .foregroundColor: UIColor.tertiaryLabel,
@@ -445,7 +443,7 @@ class GrowingTextView: UITextView {
     private func reportHeight() {
         guard bounds.width > 0 else { return }
         let fittingSize = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
-        let h = max(fittingSize.height, 22)
+        let h = max(fittingSize.height, 20)
         coordinator?.parent.onHeightChange(h)
     }
 
