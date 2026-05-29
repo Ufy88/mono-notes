@@ -1,13 +1,10 @@
 import SwiftUI
 
 // MARK: - ListEditorState
-// Owns all list mutation logic that was previously inline in FileEditorView.
-// FileEditorView creates one instance and delegates every input action to it.
 
 @Observable
 final class ListEditorState {
 
-    // Injected references — set by FileEditorView before any action fires.
     var file: FileItem = FileItem(kind: .list)
     var focusedItemID: UUID? = nil
     var onSave: () -> Void = {}
@@ -41,11 +38,11 @@ final class ListEditorState {
         onSave()
         if let pid = prevID {
             focusedItemID = pid
-            NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": pid])
+            EditorNotification.focusItem(pid).post()
         }
     }
 
-    // MARK: Delete separator above cursor
+    // MARK: Delete separator above
 
     @discardableResult
     func handleDeleteSeparatorAbove(at idx: Int) -> Bool {
@@ -55,7 +52,7 @@ final class ListEditorState {
         file.listItems.remove(at: idx - 1)
         onSave()
         focusedItemID = itemID
-        NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": itemID])
+        EditorNotification.focusItem(itemID).post()
         return true
     }
 

@@ -2,6 +2,28 @@ import SwiftUI
 import UIKit
 import Combine
 
+// MARK: - EditorNotification
+// Typed enum replacing stringly-typed Notification.Name.
+// focusItem stays as a notification because it targets a specific UIKit
+// UITextView inside a List cell — @FocusState cannot reach into UIViewRepresentable.
+
+enum EditorNotification {
+    case focusItem(UUID)
+
+    var name: Notification.Name {
+        switch self {
+        case .focusItem: return Notification.Name("mn.focusItem")
+        }
+    }
+
+    func post() {
+        switch self {
+        case .focusItem(let id):
+            NotificationCenter.default.post(name: name, object: nil, userInfo: ["id": id])
+        }
+    }
+}
+
 // MARK: - Keyboard visibility observer
 
 final class KeyboardObserver: ObservableObject {
@@ -27,14 +49,6 @@ final class KeyboardObserver: ObservableObject {
     }
 }
 
-// MARK: - Notifications
-
-extension Notification.Name {
-    static let focusNoteEditor  = Notification.Name("focusNoteEditor")
-    static let sidebarWillOpen  = Notification.Name("sidebarWillOpen")
-    static let focusItem        = Notification.Name("focusItem")
-}
-
 // MARK: - FileEditorView
 
 struct FileEditorView: View {
@@ -44,20 +58,26 @@ struct FileEditorView: View {
 
     let initialFile: FileItem
     let tab: AppTab
+    /// Passed from the parent (e.g. RootView / SidebarView).
+    /// When it flips true the editor dismisses keyboard and clears focus.
+    @Binding var sidebarIsOpen: Bool
 
     @State private var file: FileItem
     @State private var titleFocused: Bool = false
     @State private var keyboardDismissed: Bool = false
+    /// Replaces the old .focusNoteEditor notification — flipping to true
+    /// tells NoteEditorWrapper to becomeFirstResponder.
+    @State private var noteEditorFocusRequest: Bool = false
 
-    // Convenience alias so call-sites stay readable.
     private var focusedItemID: UUID? {
         get { listState.focusedItemID }
         nonmutating set { listState.focusedItemID = newValue }
     }
 
-    init(file: FileItem, tab: AppTab) {
+    init(file: FileItem, tab: AppTab, sidebarIsOpen: Binding<Bool>) {
         self.initialFile = file
         self.tab = tab
+        self._sidebarIsOpen = sidebarIsOpen
         _file = State(initialValue: file)
     }
 
@@ -74,7 +94,7 @@ struct FileEditorView: View {
                 Button {
                     keyboardDismissed = false
                     if file.kind == .note {
-                        NotificationCenter.default.post(name: .focusNoteEditor, object: nil)
+                        noteEditorFocusRequest = true
                     } else {
                         let id = listState.focusedItemID ?? file.listItems.first(where: { !$0.isSeparator })?.id
                         if let id {
@@ -103,9 +123,13 @@ struct FileEditorView: View {
             file = store.findFile(id: initialFile.id) ?? initialFile
             syncState()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .sidebarWillOpen)) { _ in
-            keyboardDismissed = true
-            listState.focusedItemID = nil
+        // Replaces .onReceive(.sidebarWillOpen)
+        .onChange(of: sidebarIsOpen) { _, isOpen in
+            if isOpen {
+                keyboardDismissed = true
+                listState.focusedItemID = nil
+                KeyboardObserver.dismiss()
+            }
         }
     }
 
@@ -128,6 +152,7 @@ struct FileEditorView: View {
                 get: { file.body },
                 set: { file.body = $0; file.updatedAt = Date(); store.updateFile(file, tab: tab) }
             ),
+            focusRequest: $noteEditorFocusRequest,
             onDismiss: { keyboardDismissed = true; KeyboardObserver.dismiss() }
         )
     }
@@ -221,7 +246,6 @@ struct FileEditorView: View {
         listState.file = file
     }
 
-    /// Keep ListEditorState in sync whenever file changes.
     private func syncState() {
         listState.file = file
         listState.onSave = {

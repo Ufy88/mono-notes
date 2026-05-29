@@ -2,7 +2,6 @@ import SwiftUI
 import UIKit
 
 // MARK: - AccessoryBar
-// Flat keyboard accessory bar shown above the keyboard for both note and list editors.
 
 final class AccessoryBar: UIView {
     private let stack = UIStackView()
@@ -68,10 +67,6 @@ final class AccessoryBar: UIView {
 }
 
 // MARK: - HideReorderHandlesProxy
-// UIViewRepresentable that finds the UITableView backing the SwiftUI List, then on
-// every display-link tick walks visible cells and sets alpha = 0 on every
-// UITableViewCellReorderControl. editMode stays .active so .onMove still works —
-// the handles are simply invisible. The drag gesture remains fully functional.
 
 struct HideReorderHandlesProxy: UIViewRepresentable {
     func makeUIView(context: Context) -> HideHandlesView { HideHandlesView() }
@@ -130,9 +125,12 @@ extension UIView {
 }
 
 // MARK: - NoteEditorWrapper
+// focusRequest: Binding<Bool> replaces the old .focusNoteEditor notification.
+// The parent sets it to true; the wrapper calls becomeFirstResponder and resets it.
 
 struct NoteEditorWrapper: UIViewRepresentable {
     @Binding var text: String
+    @Binding var focusRequest: Bool
     let onDismiss: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -152,14 +150,18 @@ struct NoteEditorWrapper: UIViewRepresentable {
                       separatorSel: #selector(Coordinator.noop), dismissSel: #selector(Coordinator.tappedDismiss))
         tv.inputAccessoryView = bar
         context.coordinator.textView = tv
-        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.focusFromFAB),
-                                               name: .focusNoteEditor, object: nil)
         return tv
     }
 
     func updateUIView(_ tv: UITextView, context: Context) {
         context.coordinator.parent = self
         if tv.text != text { tv.text = text }
+        if focusRequest && !tv.isFirstResponder {
+            DispatchQueue.main.async {
+                tv.becomeFirstResponder()
+                self.focusRequest = false
+            }
+        }
     }
 
     class Coordinator: NSObject, UITextViewDelegate {
@@ -168,7 +170,6 @@ struct NoteEditorWrapper: UIViewRepresentable {
         init(parent: NoteEditorWrapper) { self.parent = parent }
         func textViewDidChange(_ tv: UITextView) { parent.text = tv.text }
         @objc func tappedDismiss() { parent.onDismiss() }
-        @objc func focusFromFAB() { textView?.becomeFirstResponder() }
         @objc func noop() {}
     }
 }
@@ -270,14 +271,12 @@ struct OutlineItemRow: View {
             if item.depth > 0 {
                 Color.clear.frame(width: indentWidth, height: 1)
             }
-
             Text("\u{2022}")
                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
                 .frame(width: bulletWidth, alignment: .center)
                 .padding(.top, 3)
                 .onTapGesture { onCheck() }
-
             OutlineTextView(
                 text: $item.text,
                 itemID: item.id,
@@ -296,7 +295,6 @@ struct OutlineItemRow: View {
                 }
             )
             .frame(maxWidth: .infinity, minHeight: textHeight, maxHeight: textHeight)
-
             if hasChildren {
                 Button(action: onToggleCollapse) {
                     Image(systemName: item.isCollapsed ? "chevron.right" : "chevron.down")
@@ -348,7 +346,6 @@ struct OutlineTextView: UIViewRepresentable {
         tv.coordinator = context.coordinator
         tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tv.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
         let bar = AccessoryBar(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
         bar.configure(isList: true, target: context.coordinator,
                       indentSel: #selector(Coordinator.tappedIndent),
@@ -356,23 +353,21 @@ struct OutlineTextView: UIViewRepresentable {
                       separatorSel: #selector(Coordinator.tappedSeparator),
                       dismissSel: #selector(Coordinator.tappedDismiss))
         tv.inputAccessoryView = bar
-
+        // focusItem stays as Notification: targets a specific UITextView inside List cell.
+        // Typed via EditorNotification enum.
         NotificationCenter.default.addObserver(
             context.coordinator,
             selector: #selector(Coordinator.handleFocusItem(_:)),
-            name: .focusItem,
+            name: EditorNotification.focusItem(.init()).name,
             object: nil
         )
-
         return tv
     }
 
     func updateUIView(_ tv: GrowingTextView, context: Context) {
         context.coordinator.parent = self
         tv.coordinator = context.coordinator
-
         if tv.text != text { tv.text = text }
-
         let paraStyle = NSMutableParagraphStyle()
         paraStyle.lineSpacing = 1
         let attrs: [NSAttributedString.Key: Any] = isChecked
@@ -383,10 +378,8 @@ struct OutlineTextView: UIViewRepresentable {
             : [.foregroundColor: UIColor.label,
                .font: UIFont.monospacedSystemFont(ofSize: 13, weight: .medium),
                .paragraphStyle: paraStyle]
-
         let newAttr = NSAttributedString(string: tv.text, attributes: attrs)
         if tv.attributedText != newAttr { tv.attributedText = newAttr }
-
         if isActive && !tv.isFirstResponder {
             DispatchQueue.main.async { tv.becomeFirstResponder() }
         }
@@ -449,19 +442,12 @@ class GrowingTextView: UITextView {
             guard let r = selectedTextRange else { return false }
             return r.isEmpty && offset(from: beginningOfDocument, to: r.start) == 0
         }()
-
         if atStart && text.isEmpty {
             let separatorDeleted = coordinator?.parent.onDeleteSeparatorAbove() ?? false
-            if !separatorDeleted {
-                coordinator?.parent.onUnindent()
-            }
+            if !separatorDeleted { coordinator?.parent.onUnindent() }
             return
         }
-
-        if atStart && !text.isEmpty {
-            coordinator?.parent.onUnindent()
-        }
-
+        if atStart && !text.isEmpty { coordinator?.parent.onUnindent() }
         if !text.isEmpty { super.deleteBackward() }
     }
 }
