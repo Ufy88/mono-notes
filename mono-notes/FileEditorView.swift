@@ -40,14 +40,20 @@ extension Notification.Name {
 struct FileEditorView: View {
     @EnvironmentObject var store: AppStore
     @StateObject private var keyboard = KeyboardObserver()
+    @State private var listState = ListEditorState()
 
     let initialFile: FileItem
     let tab: AppTab
 
     @State private var file: FileItem
-    @State private var focusedItemID: UUID? = nil
     @State private var titleFocused: Bool = false
     @State private var keyboardDismissed: Bool = false
+
+    // Convenience alias so call-sites stay readable.
+    private var focusedItemID: UUID? {
+        get { listState.focusedItemID }
+        nonmutating set { listState.focusedItemID = newValue }
+    }
 
     init(file: FileItem, tab: AppTab) {
         self.initialFile = file
@@ -70,10 +76,12 @@ struct FileEditorView: View {
                     if file.kind == .note {
                         NotificationCenter.default.post(name: .focusNoteEditor, object: nil)
                     } else {
-                        let id = focusedItemID ?? file.listItems.first(where: { !$0.isSeparator })?.id
+                        let id = listState.focusedItemID ?? file.listItems.first(where: { !$0.isSeparator })?.id
                         if let id {
-                            focusedItemID = nil
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = id }
+                            listState.focusedItemID = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                listState.focusedItemID = id
+                            }
                         }
                     }
                 } label: {
@@ -91,10 +99,13 @@ struct FileEditorView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: keyboard.isVisible)
-        .onAppear { file = store.findFile(id: initialFile.id) ?? initialFile }
+        .onAppear {
+            file = store.findFile(id: initialFile.id) ?? initialFile
+            syncState()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .sidebarWillOpen)) { _ in
             keyboardDismissed = true
-            focusedItemID = nil
+            listState.focusedItemID = nil
         }
     }
 
@@ -122,11 +133,8 @@ struct FileEditorView: View {
     }
 
     // MARK: - List editor
-    // editMode stays .active so SwiftUI enables .onMove drag.
-    // Reorder handles are hidden by HideReorderHandlesProxy (see ListEditorComponents.swift).
     private var listEditor: some View {
         List {
-            // Title — not reorderable
             Section {
                 TitleTextField(
                     text: Binding(get: { file.title }, set: { file.title = $0; save() }),
@@ -134,8 +142,8 @@ struct FileEditorView: View {
                     requestFocus: $titleFocused,
                     onReturn: {
                         titleFocused = false; keyboardDismissed = false
-                        focusedItemID = file.listItems.first(where: { !$0.isSeparator })?.id
-                            ?? addNewItem(after: nil).id
+                        listState.focusedItemID = file.listItems.first(where: { !$0.isSeparator })?.id
+                            ?? listState.addNewItem(after: nil).id
                     },
                     onDismiss: { keyboardDismissed = true; KeyboardObserver.dismiss() }
                 )
@@ -144,7 +152,6 @@ struct FileEditorView: View {
                 .moveDisabled(true)
             }
 
-            // Items
             let visible = file.visibleItemIDs()
             ForEach($file.listItems, id: \.id) { $item in
                 if visible.contains(item.id) {
@@ -157,15 +164,15 @@ struct FileEditorView: View {
                         OutlineItemRow(
                             item: $item,
                             hasChildren: file.hasChildren(after: item),
-                            isActive: focusedItemID == item.id && !keyboardDismissed,
-                            onFocus: { keyboardDismissed = false; focusedItemID = item.id },
-                            onEnter: { handleEnter(at: idx) },
+                            isActive: listState.focusedItemID == item.id && !keyboardDismissed,
+                            onFocus: { keyboardDismissed = false; listState.focusedItemID = item.id },
+                            onEnter: { listState.handleEnter(at: idx) },
                             onIndent: { file.listItems[idx].depth = min(file.listItems[idx].depth + 1, 4); save() },
-                            onUnindent: { handleUnindent(at: idx, visible: visible) },
-                            onDeleteSeparatorAbove: { handleDeleteSeparatorAbove(at: idx) },
+                            onUnindent: { listState.handleUnindent(at: idx, visible: visible) },
+                            onDeleteSeparatorAbove: { listState.handleDeleteSeparatorAbove(at: idx) },
                             onCheck: { file.listItems[idx].checked.toggle(); save() },
                             onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
-                            onInsertSeparator: { insertSeparator(after: idx) },
+                            onInsertSeparator: { listState.insertSeparator(after: idx) },
                             onDismissKeyboard: { keyboardDismissed = true; KeyboardObserver.dismiss() },
                             onChange: { save() }
                         )
@@ -179,20 +186,22 @@ struct FileEditorView: View {
                 save()
             }
 
-            // Bottom tap area
             Color.clear
-                .frame(maxWidth: .infinity)
-                .frame(height: 300)
+                .frame(maxWidth: .infinity).frame(height: 300)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     keyboardDismissed = false
                     let lastID = file.listItems.last(where: { !$0.isSeparator })?.id
                     if let id = lastID {
-                        focusedItemID = nil
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = id }
+                        listState.focusedItemID = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            listState.focusedItemID = id
+                        }
                     } else {
-                        let item = addNewItem(after: nil); save()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = item.id }
+                        let item = listState.addNewItem(after: nil); save()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            listState.focusedItemID = item.id
+                        }
                     }
                 }
                 .listRowInsets(EdgeInsets())
@@ -204,81 +213,23 @@ struct FileEditorView: View {
         .background(HideReorderHandlesProxy())
     }
 
-    // MARK: - Input handlers
+    // MARK: - Helpers
 
-    private func handleEnter(at idx: Int) {
-        let current = file.listItems[idx]
-        let isEmpty = current.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if isEmpty {
-            if current.depth > 0 { file.listItems[idx].depth -= 1; save() }
-            return
-        }
-        let newItem = addNewItem(after: current.id)
-        save()
-        focusedItemID = newItem.id
+    private func save() {
+        file.updatedAt = Date()
+        store.updateFile(file, tab: tab)
+        listState.file = file
     }
 
-    private func handleUnindent(at idx: Int, visible: Set<UUID>) {
-        guard idx < file.listItems.count else { return }
-        if file.listItems[idx].depth > 0 {
-            file.listItems[idx].depth -= 1; save()
-            return
-        }
-        guard file.listItems[idx].text.isEmpty else { return }
-        let prevID = prevVisibleID(before: idx, visible: visible)
-        file.listItems.remove(at: idx)
-        save()
-        if let pid = prevID {
-            focusedItemID = pid
-            NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": pid])
+    /// Keep ListEditorState in sync whenever file changes.
+    private func syncState() {
+        listState.file = file
+        listState.onSave = {
+            self.file = self.listState.file
+            self.file.updatedAt = Date()
+            self.store.updateFile(self.file, tab: self.tab)
         }
     }
-
-    @discardableResult
-    private func handleDeleteSeparatorAbove(at idx: Int) -> Bool {
-        guard idx > 0, idx < file.listItems.count else { return false }
-        guard file.listItems[idx - 1].isSeparator else { return false }
-        let itemID = file.listItems[idx].id
-        file.listItems.remove(at: idx - 1)
-        save()
-        focusedItemID = itemID
-        NotificationCenter.default.post(name: .focusItem, object: nil, userInfo: ["id": itemID])
-        return true
-    }
-
-    @discardableResult
-    private func addNewItem(after id: UUID?) -> ListItem {
-        var depth = 0
-        var insertIndex = file.listItems.endIndex
-        if let id, let idx = file.listItems.firstIndex(where: { $0.id == id }) {
-            depth = file.listItems[idx].depth
-            insertIndex = idx + 1
-        }
-        var item = ListItem(); item.depth = depth
-        file.listItems.insert(item, at: insertIndex)
-        return item
-    }
-
-    private func insertSeparator(after idx: Int) {
-        var sep = ListItem(); sep.isSeparator = true
-        file.listItems.insert(sep, at: idx + 1)
-        let blank = ListItem()
-        file.listItems.insert(blank, at: idx + 2)
-        save()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focusedItemID = blank.id }
-    }
-
-    private func prevVisibleID(before idx: Int, visible: Set<UUID>) -> UUID? {
-        guard idx > 0 else { return nil }
-        for i in stride(from: idx - 1, through: 0, by: -1) {
-            if visible.contains(file.listItems[i].id) && !file.listItems[i].isSeparator {
-                return file.listItems[i].id
-            }
-        }
-        return nil
-    }
-
-    private func save() { file.updatedAt = Date(); store.updateFile(file, tab: tab) }
 
     private var wordCountLabel: String {
         "\(file.body.split { $0.isWhitespace }.count)w \(file.body.count)c"
