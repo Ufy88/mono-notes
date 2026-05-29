@@ -6,43 +6,51 @@ struct RootView: View {
     @State private var selectedTab: AppTab = .notes
     @State private var sidebarOpen = false
 
-    // Drag tracking
     @State private var dragOffset: CGFloat = 0
     private let edgeWidth: CGFloat = 24
     private let openThreshold: CGFloat = 60
     private let closeThreshold: CGFloat = 60
 
+    // Spring used for both open and close
+    private let sidebarSpring = Animation.spring(response: 0.3, dampingFraction: 0.85)
+
     var body: some View {
         GeometryReader { geo in
             let sidebarWidth = geo.size.width * 0.8
+            // Sidebar is ALWAYS in the hierarchy — we just slide it in/out via offset.
+            // This ensures the closing transition plays identically to the opening one.
+            let offset: CGFloat = sidebarOpen
+                ? min(dragOffset, 0)          // can't drag further right when open
+                : sidebarWidth - max(dragOffset, 0) // partially reveal while dragging open
 
             ZStack(alignment: .leading) {
+                // Main content
                 mainContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .gesture(closeSidebarGesture(sidebarWidth: sidebarWidth))
 
-                if sidebarOpen {
-                    Color.black.opacity(0.25)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                sidebarOpen = false
-                            }
-                        }
-                        .transition(.opacity)
-                }
+                // Dim overlay — fades with sidebar position
+                let progress = 1 - (offset / sidebarWidth)
+                Color.black
+                    .opacity(0.25 * progress)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(sidebarOpen)
+                    .onTapGesture {
+                        withAnimation(sidebarSpring) { sidebarOpen = false }
+                    }
 
-                if sidebarOpen {
-                    SidebarView(
-                        selectedFile: $selectedFile,
-                        selectedTab: $selectedTab,
-                        sidebarOpen: $sidebarOpen
-                    )
-                    .frame(width: sidebarWidth)
-                    .shadow(color: .black.opacity(0.12), radius: 16, x: 4, y: 0)
-                    .transition(.move(edge: .leading))
-                }
+                // Sidebar — always present, moved by offset
+                SidebarView(
+                    selectedFile: $selectedFile,
+                    selectedTab: $selectedTab,
+                    sidebarOpen: $sidebarOpen
+                )
+                .frame(width: sidebarWidth)
+                .shadow(color: .black.opacity(0.12), radius: 16, x: 4, y: 0)
+                .offset(x: -offset)
+                .animation(dragOffset == 0 ? sidebarSpring : nil, value: sidebarOpen)
 
+                // Edge swipe zone when sidebar is closed
                 if !sidebarOpen {
                     Color.clear
                         .frame(width: edgeWidth)
@@ -52,7 +60,6 @@ struct RootView: View {
                         .ignoresSafeArea()
                 }
             }
-            .animation(.spring(response: 0.3, dampingFraction: 0.85), value: sidebarOpen)
         }
         .onAppear { restoreLastOpened() }
     }
@@ -85,9 +92,7 @@ struct RootView: View {
                 let dx = value.translation.width
                 let vx = value.predictedEndTranslation.width
                 if dx < -closeThreshold || vx < -sidebarWidth * 0.5 {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                        sidebarOpen = false
-                    }
+                    withAnimation(sidebarSpring) { sidebarOpen = false }
                 }
             }
     }
@@ -95,14 +100,11 @@ struct RootView: View {
     // MARK: - Helpers
 
     private func performOpen() {
-        // sidebarWillOpen notification removed — FileEditorView observes $sidebarOpen directly
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder),
             to: nil, from: nil, for: nil
         )
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-            sidebarOpen = true
-        }
+        withAnimation(sidebarSpring) { sidebarOpen = true }
     }
 
     @ViewBuilder
