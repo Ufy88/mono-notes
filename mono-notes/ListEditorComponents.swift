@@ -98,9 +98,6 @@ final class HideHandlesView: UIView {
         tableView?.visibleCells.forEach { hideHandleImage(in: $0) }
     }
 
-    // Walk the view hierarchy. When we find UITableViewCellReorderControl,
-    // hide only its UIImageView children (the three-line icon) — NOT the
-    // control itself, so the long-press drag gesture remains functional.
     private func hideHandleImage(in view: UIView) {
         let className = NSStringFromClass(type(of: view))
         if className == "UITableViewCellReorderControl" {
@@ -349,7 +346,6 @@ struct OutlineTextView: UIViewRepresentable {
         tv.spellCheckingType = .no
         tv.isScrollEnabled = false
         tv.backgroundColor = .clear
-        // Top/bottom inset: 1pt each — tight single-line rows, 2pt total air per row.
         tv.textContainerInset = UIEdgeInsets(top: 1, left: 0, bottom: 1, right: 0)
         tv.textContainer.lineFragmentPadding = 0
         tv.textContainer.widthTracksTextView = true
@@ -379,7 +375,7 @@ struct OutlineTextView: UIViewRepresentable {
         tv.coordinator = context.coordinator
         if tv.text != text { tv.text = text }
         let paraStyle = NSMutableParagraphStyle()
-        paraStyle.lineSpacing = 0
+        paraStyle.lineSpacing = 0.25
         let attrs: [NSAttributedString.Key: Any] = isChecked
             ? [.strikethroughStyle: NSUnderlineStyle.single.rawValue,
                .foregroundColor: UIColor.tertiaryLabel,
