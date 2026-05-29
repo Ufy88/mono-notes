@@ -67,6 +67,8 @@ final class AccessoryBar: UIView {
 }
 
 // MARK: - HideReorderHandlesProxy
+// Hides the three-line drag handle image inside UITableViewCellReorderControl
+// while keeping the control itself alive so long-press drag still works.
 
 struct HideReorderHandlesProxy: UIViewRepresentable {
     func makeUIView(context: Context) -> HideHandlesView { HideHandlesView() }
@@ -81,21 +83,10 @@ struct HideReorderHandlesProxy: UIViewRepresentable {
 final class HideHandlesView: UIView {
     private weak var tableView: UITableView?
     private var displayLink: CADisplayLink?
-    private var notificationToken: NSObjectProtocol?
 
     func attach(to tableView: UITableView) {
         guard self.tableView !== tableView else { return }
         self.tableView = tableView
-
-        notificationToken = NotificationCenter.default.addObserver(
-            forName: UITableView.mn_willDisplayCell,
-            object: tableView,
-            queue: .main
-        ) { [weak self] note in
-            guard let cell = note.userInfo?["cell"] as? UIView else { return }
-            self?.hideHandles(in: cell)
-        }
-
         displayLink?.invalidate()
         let link = CADisplayLink(target: self, selector: #selector(tick))
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 60)
@@ -104,44 +95,27 @@ final class HideHandlesView: UIView {
     }
 
     @objc private func tick() {
-        guard let tv = tableView else { return }
-        tv.visibleCells.forEach { hideHandles(in: $0) }
-        tv.mn_postWillDisplayForVisibleCells()
+        tableView?.visibleCells.forEach { hideHandleImage(in: $0) }
     }
 
-    private func hideHandles(in view: UIView) {
-        if NSStringFromClass(type(of: view)) == "UITableViewCellReorderControl" {
-            if view.alpha != 0 { view.alpha = 0 }
-            view.isHidden = true
+    // Walk the view hierarchy. When we find UITableViewCellReorderControl,
+    // hide only its UIImageView children (the three-line icon) — NOT the
+    // control itself, so the long-press drag gesture remains functional.
+    private func hideHandleImage(in view: UIView) {
+        let className = NSStringFromClass(type(of: view))
+        if className == "UITableViewCellReorderControl" {
+            for sub in view.subviews where sub is UIImageView {
+                if !sub.isHidden { sub.isHidden = true }
+            }
             return
         }
-        view.subviews.forEach { hideHandles(in: $0) }
+        view.subviews.forEach { hideHandleImage(in: $0) }
     }
 
     override func removeFromSuperview() {
         displayLink?.invalidate()
         displayLink = nil
-        if let token = notificationToken {
-            NotificationCenter.default.removeObserver(token)
-        }
-        notificationToken = nil
         super.removeFromSuperview()
-    }
-}
-
-// MARK: - UITableView notification + helper
-
-extension UITableView {
-    static let mn_willDisplayCell = Notification.Name("mn.tableView.willDisplayCell")
-
-    func mn_postWillDisplayForVisibleCells() {
-        for cell in visibleCells {
-            NotificationCenter.default.post(
-                name: UITableView.mn_willDisplayCell,
-                object: self,
-                userInfo: ["cell": cell]
-            )
-        }
     }
 }
 
@@ -291,12 +265,9 @@ struct OutlineItemRow: View {
     let onInsertSeparator: () -> Void
     let onDismissKeyboard: () -> Void
     let onChange: () -> Void
-    // Called the moment the user begins dragging this row.
-    // Used to collapse foreign children before the drag gesture
-    // commits so they can't be accidentally adopted.
     let onDragBegan: () -> Void
 
-    @State private var textHeight: CGFloat = 26
+    @State private var textHeight: CGFloat = 22
 
     private var indentWidth: CGFloat { CGFloat(item.depth) * 20 }
     private let bulletWidth: CGFloat = 22
@@ -311,7 +282,7 @@ struct OutlineItemRow: View {
                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundStyle(item.checked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
                 .frame(width: bulletWidth, alignment: .center)
-                .padding(.top, 3)
+                .padding(.top, 2)
                 .onTapGesture { onCheck() }
             OutlineTextView(
                 text: $item.text,
@@ -335,18 +306,17 @@ struct OutlineItemRow: View {
                 Button(action: onToggleCollapse) {
                     Image(systemName: item.isCollapsed ? "chevron.right" : "chevron.down")
                         .font(.system(size: 10, weight: .medium)).foregroundStyle(.quaternary)
-                        .frame(width: chevronWidth, height: 28).contentShape(Rectangle())
+                        .frame(width: chevronWidth, height: 24).contentShape(Rectangle())
                 }.buttonStyle(.plain).padding(.top, 1)
             } else {
                 Color.clear.frame(width: chevronWidth, height: 1)
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 1)
+        // Reduced from 1 to 0 — spacing between rows comes only from
+        // textContainerInset in GrowingTextView (top:2, bottom:2).
+        .padding(.vertical, 0)
         .contentShape(Rectangle())
-        // .onDrag fires when the List drag gesture begins — before .onMove.
-        // We use this to collapse foreign subtrees so the user can't insert
-        // the dragged row between children that belong to another parent.
         .onDrag {
             onDragBegan()
             return NSItemProvider()
@@ -381,7 +351,8 @@ struct OutlineTextView: UIViewRepresentable {
         tv.spellCheckingType = .no
         tv.isScrollEnabled = false
         tv.backgroundColor = .clear
-        tv.textContainerInset = UIEdgeInsets(top: 3, left: 0, bottom: 3, right: 0)
+        // Reduced vertical inset from 3 to 2 for tighter row spacing.
+        tv.textContainerInset = UIEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
         tv.textContainer.lineFragmentPadding = 0
         tv.textContainer.widthTracksTextView = true
         tv.returnKeyType = .next
@@ -474,7 +445,7 @@ class GrowingTextView: UITextView {
     private func reportHeight() {
         guard bounds.width > 0 else { return }
         let fittingSize = sizeThatFits(CGSize(width: bounds.width, height: .greatestFiniteMagnitude))
-        let h = max(fittingSize.height, 26)
+        let h = max(fittingSize.height, 22)
         coordinator?.parent.onHeightChange(h)
     }
 
