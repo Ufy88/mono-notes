@@ -73,7 +73,7 @@ final class AccessoryBar: UIView {
 // Two-pronged approach (no flash):
 // 1. Subscriber on UITableView.mn_willDisplayCell — zeroes alpha the moment
 //    a cell appears, before the user can see the handle.
-// 2. CADisplayLink at 15-30 fps — catches handles that reappear after a
+// 2. CADisplayLink at 60 fps — catches handles that reappear after a
 //    reorder animation or mid-scroll.
 
 struct HideReorderHandlesProxy: UIViewRepresentable {
@@ -95,7 +95,6 @@ final class HideHandlesView: UIView {
         guard self.tableView !== tableView else { return }
         self.tableView = tableView
 
-        // Immediate: hide on willDisplay
         notificationToken = NotificationCenter.default.addObserver(
             forName: UITableView.mn_willDisplayCell,
             object: tableView,
@@ -105,10 +104,9 @@ final class HideHandlesView: UIView {
             self?.hideHandles(in: cell)
         }
 
-        // Fallback: cover reorder-animation frames
         displayLink?.invalidate()
         let link = CADisplayLink(target: self, selector: #selector(tick))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 60)
         link.add(to: .main, forMode: .common)
         self.displayLink = link
     }
@@ -116,13 +114,13 @@ final class HideHandlesView: UIView {
     @objc private func tick() {
         guard let tv = tableView else { return }
         tv.visibleCells.forEach { hideHandles(in: $0) }
-        // Also post mn_willDisplayCell for any newly visible cell
         tv.mn_postWillDisplayForVisibleCells()
     }
 
     private func hideHandles(in view: UIView) {
         if NSStringFromClass(type(of: view)) == "UITableViewCellReorderControl" {
             if view.alpha != 0 { view.alpha = 0 }
+            view.isHidden = true
             return
         }
         view.subviews.forEach { hideHandles(in: $0) }
@@ -142,11 +140,8 @@ final class HideHandlesView: UIView {
 // MARK: - UITableView notification + helper
 
 extension UITableView {
-    /// Posted whenever a cell is about to display so HideHandlesView can
-    /// zero the reorder-handle alpha before it becomes visible.
     static let mn_willDisplayCell = Notification.Name("mn.tableView.willDisplayCell")
 
-    /// Call to post mn_willDisplayCell for all currently visible cells.
     func mn_postWillDisplayForVisibleCells() {
         for cell in visibleCells {
             NotificationCenter.default.post(
@@ -339,7 +334,7 @@ struct OutlineItemRow: View {
                     if abs(h - textHeight) > 0.5 { textHeight = h }
                 }
             )
-            .frame(maxWidth: .infinity, minHeight: textHeight, maxHeight: textHeight)
+            .frame(maxWidth: .infinity, maxHeight: textHeight)
             if hasChildren {
                 Button(action: onToggleCollapse) {
                     Image(systemName: item.isCollapsed ? "chevron.right" : "chevron.down")
@@ -351,7 +346,7 @@ struct OutlineItemRow: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 2)
+        .padding(.vertical, 1)
         .contentShape(Rectangle())
     }
 }
@@ -383,7 +378,6 @@ struct OutlineTextView: UIViewRepresentable {
         tv.spellCheckingType = .no
         tv.isScrollEnabled = false
         tv.backgroundColor = .clear
-        // Reduced top/bottom inset: 6 -> 3 to tighten spacing between rows.
         tv.textContainerInset = UIEdgeInsets(top: 3, left: 0, bottom: 3, right: 0)
         tv.textContainer.lineFragmentPadding = 0
         tv.textContainer.widthTracksTextView = true
