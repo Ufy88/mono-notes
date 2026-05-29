@@ -8,9 +8,9 @@ struct RootView: View {
 
     // Drag tracking
     @State private var dragOffset: CGFloat = 0
-    private let edgeWidth: CGFloat = 24      // left-edge hit zone width
-    private let openThreshold: CGFloat = 60  // min swipe distance to open
-    private let closeThreshold: CGFloat = 60 // min swipe distance to close
+    private let edgeWidth: CGFloat = 24
+    private let openThreshold: CGFloat = 60
+    private let closeThreshold: CGFloat = 60
 
     var body: some View {
         GeometryReader { geo in
@@ -43,7 +43,6 @@ struct RootView: View {
                     .transition(.move(edge: .leading))
                 }
 
-                // Invisible left-edge swipe zone — opens sidebar
                 if !sidebarOpen {
                     Color.clear
                         .frame(width: edgeWidth)
@@ -60,7 +59,6 @@ struct RootView: View {
 
     // MARK: - Gestures
 
-    /// Swipe right from the left edge → open sidebar
     private func openSidebarGesture(sidebarWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
             .onChanged { value in
@@ -79,7 +77,6 @@ struct RootView: View {
             }
     }
 
-    /// Swipe left while sidebar is open → close sidebar
     private func closeSidebarGesture(sidebarWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
             .onChanged { _ in }
@@ -98,7 +95,7 @@ struct RootView: View {
     // MARK: - Helpers
 
     private func performOpen() {
-        NotificationCenter.default.post(name: .sidebarWillOpen, object: nil)
+        // sidebarWillOpen notification removed — FileEditorView observes $sidebarOpen directly
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder),
             to: nil, from: nil, for: nil
@@ -111,7 +108,7 @@ struct RootView: View {
     @ViewBuilder
     private var mainContent: some View {
         if let file = selectedFile {
-            FileEditorView(file: file, tab: selectedTab)
+            FileEditorView(file: file, tab: selectedTab, sidebarIsOpen: $sidebarOpen)
                 .id(file.id)
                 .safeAreaInset(edge: .top) { editorNavBar }
         } else if store.hasAnyContent() {
