@@ -9,6 +9,11 @@ final class AppStore: ObservableObject {
         return docs.appendingPathComponent("appdata.json")
     }()
 
+    // Debounce: content edits wait 400ms before hitting disk.
+    // Structural ops (create/delete/move/rename) call saveImmediately().
+    private var saveWorkItem: DispatchWorkItem?
+    private let saveDelay: TimeInterval = 0.4
+
     init() {
         load()
         if !data.didOnboard { onboard() }
@@ -24,14 +29,14 @@ final class AppStore: ObservableObject {
         data.lastOpenedID = sample.id
         data.lastOpenedTab = AppTab.notes.rawValue
         data.didOnboard = true
-        save()
+        saveImmediately()
     }
 
     // MARK: - Convenience
 
     var currentTab: AppTab {
         get { AppTab(rawValue: data.lastOpenedTab) ?? .notes }
-        set { data.lastOpenedTab = newValue.rawValue; save() }
+        set { data.lastOpenedTab = newValue.rawValue; saveImmediately() }
     }
 
     func roots(for tab: AppTab) -> [FolderChild] {
@@ -40,7 +45,7 @@ final class AppStore: ObservableObject {
 
     func setRoots(_ roots: [FolderChild], for tab: AppTab) {
         if tab == .notes { data.noteRoots = roots } else { data.listRoots = roots }
-        save()
+        saveImmediately()
     }
 
     // MARK: - Search (flat, across all items in tab)
@@ -63,7 +68,7 @@ final class AppStore: ObservableObject {
         }
         data.lastOpenedID = file.id
         data.lastOpenedTab = tab.rawValue
-        save()
+        saveImmediately()
         return file
     }
 
@@ -76,16 +81,17 @@ final class AppStore: ObservableObject {
         } else {
             prependFolderToRoots(child, tab: tab)
         }
-        save()
+        saveImmediately()
         return folder
     }
 
-    // MARK: - Update
+    // MARK: - Update (debounced — called on every keystroke)
 
     func updateFile(_ file: FileItem, tab: AppTab) {
         var r = roots(for: tab)
         updateFileInRoots(&r, file: file)
-        setRoots(r, for: tab)
+        if tab == .notes { data.noteRoots = r } else { data.listRoots = r }
+        saveDebounced()
     }
 
     // MARK: - Delete
@@ -95,6 +101,7 @@ final class AppStore: ObservableObject {
         deleteFromRoots(&r, id: id)
         setRoots(r, for: tab)
         if data.lastOpenedID == id { data.lastOpenedID = nil }
+        saveImmediately()
     }
 
     // MARK: - Rename folder
@@ -124,7 +131,7 @@ final class AppStore: ObservableObject {
     func setLastOpened(id: UUID, tab: AppTab) {
         data.lastOpenedID = id
         data.lastOpenedTab = tab.rawValue
-        save()
+        saveImmediately()
     }
 
     // MARK: - Find
@@ -162,7 +169,27 @@ final class AppStore: ObservableObject {
 
     // MARK: - Persistence
 
-    func save() {
+    /// Debounced write — used for content edits (keystrokes).
+    func saveDebounced() {
+        saveWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.writeToDisk()
+        }
+        saveWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + saveDelay, execute: item)
+    }
+
+    /// Immediate write — used for structural changes (create/delete/move/rename).
+    func saveImmediately() {
+        saveWorkItem?.cancel()
+        saveWorkItem = nil
+        writeToDisk()
+    }
+
+    /// Legacy entry point kept for call-sites that need instant persistence.
+    func save() { saveImmediately() }
+
+    private func writeToDisk() {
         if let encoded = try? JSONEncoder().encode(data) {
             try? encoded.write(to: saveURL, options: .atomic)
         }
