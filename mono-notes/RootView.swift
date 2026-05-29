@@ -6,59 +6,58 @@ struct RootView: View {
     @State private var selectedTab: AppTab = .notes
     @State private var sidebarOpen = false
 
-    @State private var dragOffset: CGFloat = 0
-    private let edgeWidth: CGFloat = 24
-    private let openThreshold: CGFloat = 60
-    private let closeThreshold: CGFloat = 60
+    // Single source of truth for sidebar position:
+    // 0 = fully open, sidebarWidth = fully hidden.
+    @State private var visualOffset: CGFloat = 0   // set after geo is known
+    @State private var sidebarWidth: CGFloat = 0
+    @State private var isDragging = false
 
-    // Spring used for both open and close
+    private let edgeWidth: CGFloat = 24
     private let sidebarSpring = Animation.spring(response: 0.3, dampingFraction: 0.85)
 
     var body: some View {
         GeometryReader { geo in
-            let sidebarWidth = geo.size.width * 0.8
-            // Sidebar is ALWAYS in the hierarchy — we just slide it in/out via offset.
-            // This ensures the closing transition plays identically to the opening one.
-            let offset: CGFloat = sidebarOpen
-                ? min(dragOffset, 0)          // can't drag further right when open
-                : sidebarWidth - max(dragOffset, 0) // partially reveal while dragging open
-
+            let sw = geo.size.width * 0.8
             ZStack(alignment: .leading) {
+
                 // Main content
                 mainContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .gesture(closeSidebarGesture(sidebarWidth: sidebarWidth))
 
-                // Dim overlay — fades with sidebar position
-                let progress = 1 - (offset / sidebarWidth)
+                // Dim overlay proportional to how far sidebar is open
+                let progress = sw > 0 ? max(0, 1 - visualOffset / sw) : 0
                 Color.black
-                    .opacity(0.25 * progress)
+                    .opacity(0.3 * progress)
                     .ignoresSafeArea()
-                    .allowsHitTesting(sidebarOpen)
-                    .onTapGesture {
-                        withAnimation(sidebarSpring) { sidebarOpen = false }
-                    }
+                    .allowsHitTesting(progress > 0.01)
+                    .onTapGesture { closeSidebar() }
 
-                // Sidebar — always present, moved by offset
+                // Sidebar — always in hierarchy, moved by visualOffset
                 SidebarView(
                     selectedFile: $selectedFile,
                     selectedTab: $selectedTab,
                     sidebarOpen: $sidebarOpen
                 )
-                .frame(width: sidebarWidth)
-                .shadow(color: .black.opacity(0.12), radius: 16, x: 4, y: 0)
-                .offset(x: -offset)
-                .animation(dragOffset == 0 ? sidebarSpring : nil, value: sidebarOpen)
+                .frame(width: sw)
+                .shadow(color: .black.opacity(0.15), radius: 16, x: 4, y: 0)
+                .offset(x: -visualOffset)
 
-                // Edge swipe zone when sidebar is closed
-                if !sidebarOpen {
-                    Color.clear
-                        .frame(width: edgeWidth)
-                        .frame(maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .gesture(openSidebarGesture(sidebarWidth: sidebarWidth))
-                        .ignoresSafeArea()
-                }
+                // Edge swipe-open zone
+                Color.clear
+                    .frame(width: edgeWidth)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .ignoresSafeArea()
+                    .gesture(edgeDrag(sidebarWidth: sw))
+            }
+            .gesture(closeDrag(sidebarWidth: sw))
+            .onAppear {
+                sidebarWidth = sw
+                visualOffset = sw   // start hidden
+            }
+            .onChange(of: geo.size) { _, size in
+                sidebarWidth = size.width * 0.8
+                visualOffset = sidebarOpen ? 0 : sidebarWidth
             }
         }
         .onAppear { restoreLastOpened() }
@@ -66,46 +65,70 @@ struct RootView: View {
 
     // MARK: - Gestures
 
-    private func openSidebarGesture(sidebarWidth: CGFloat) -> some Gesture {
+    /// Swipe from left edge to open
+    private func edgeDrag(sidebarWidth sw: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
             .onChanged { value in
-                guard value.translation.width > 0,
+                guard abs(value.translation.width) > abs(value.translation.height) * 1.2 else { return }
+                isDragging = true
+                let raw = sw - value.translation.width
+                visualOffset = max(0, min(sw, raw))
+            }
+            .onEnded { value in
+                isDragging = false
+                let vx = value.predictedEndTranslation.width
+                if value.translation.width > 50 || vx > sw * 0.4 {
+                    openSidebar(sw: sw)
+                } else {
+                    closeSidebar(sw: sw)
+                }
+            }
+    }
+
+    /// Swipe left anywhere to close
+    private func closeDrag(sidebarWidth sw: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 10, coordinateSpace: .global)
+            .onChanged { value in
+                guard sidebarOpen,
+                      value.translation.width < 0,
                       abs(value.translation.width) > abs(value.translation.height) * 1.2
                 else { return }
-                dragOffset = value.translation.width
+                isDragging = true
+                let raw = abs(value.translation.width)
+                visualOffset = max(0, min(sw, raw))
             }
-            .onEnded { value in
-                let dx = value.translation.width
-                let vx = value.predictedEndTranslation.width
-                dragOffset = 0
-                if dx > openThreshold || vx > sidebarWidth * 0.5 {
-                    performOpen()
-                }
-            }
-    }
-
-    private func closeSidebarGesture(sidebarWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 10, coordinateSpace: .global)
-            .onChanged { _ in }
             .onEnded { value in
                 guard sidebarOpen else { return }
-                let dx = value.translation.width
+                isDragging = false
                 let vx = value.predictedEndTranslation.width
-                if dx < -closeThreshold || vx < -sidebarWidth * 0.5 {
-                    withAnimation(sidebarSpring) { sidebarOpen = false }
+                if value.translation.width < -50 || vx < -sw * 0.4 {
+                    closeSidebar(sw: sw)
+                } else {
+                    openSidebar(sw: sw)
                 }
             }
     }
 
-    // MARK: - Helpers
+    // MARK: - Open / Close
 
-    private func performOpen() {
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder),
-            to: nil, from: nil, for: nil
-        )
-        withAnimation(sidebarSpring) { sidebarOpen = true }
+    private func openSidebar(sw: CGFloat? = nil) {
+        let w = sw ?? sidebarWidth
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        withAnimation(sidebarSpring) {
+            visualOffset = 0
+            sidebarOpen = true
+        }
     }
+
+    private func closeSidebar(sw: CGFloat? = nil) {
+        let w = sw ?? sidebarWidth
+        withAnimation(sidebarSpring) {
+            visualOffset = w
+            sidebarOpen = false
+        }
+    }
+
+    // MARK: - Main content
 
     @ViewBuilder
     private var mainContent: some View {
@@ -126,7 +149,7 @@ struct RootView: View {
 
     private var editorNavBar: some View {
         HStack {
-            Button { performOpen() } label: {
+            Button { openSidebar() } label: {
                 Image(systemName: "sidebar.left")
                     .font(.system(size: 18))
                     .foregroundStyle(.primary)
