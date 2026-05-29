@@ -65,6 +65,7 @@ final class KeyboardObserver: ObservableObject {
 struct FileEditorView: View {
     @EnvironmentObject var store: AppStore
     @StateObject private var keyboard = KeyboardObserver()
+    // ListEditorState is @Observable — use @State, not @StateObject.
     @State private var listState = ListEditorState()
 
     let initialFile: FileItem
@@ -240,7 +241,11 @@ struct FileEditorView: View {
                 }
             }
             .onMove { from, to in
-                file.listItems.move(fromOffsets: from, toOffset: to)
+                // moveWithChildren moves the whole subtree (parent + deeper items).
+                // After the move, sync file back from listState so UI stays in sync.
+                listState.file = file
+                listState.moveWithChildren(from: from, to: to)
+                file = listState.file
                 save()
             }
 
