@@ -225,9 +225,6 @@ struct FileEditorView: View {
                             onDismissKeyboard: { keyboardDismissed = true; KeyboardObserver.dismiss() },
                             onChange: { save() },
                             onDragBegan: {
-                                // Fires the moment the user lifts and starts dragging this row.
-                                // Sync file into listState first so collapseForDrag works on
-                                // the latest data, then push the collapsed version back.
                                 listState.file = file
                                 listState.collapseForDrag(sourceIndex: idx)
                                 file = listState.file
@@ -266,6 +263,9 @@ struct FileEditorView: View {
         }
         .listStyle(.plain)
         .environment(\.editMode, .constant(.active))
+        // Removes UITableView's default 44pt minimum row height so rows
+        // collapse to their natural content height (text + 2pt insets).
+        .environment(\.defaultMinListRowHeight, 1)
         .background(HideReorderHandlesProxy())
     }
 
