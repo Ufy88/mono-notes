@@ -103,7 +103,7 @@ struct FileEditorView: View {
             }
             .background(Color(.systemBackground))
 
-            // 3.3: smooth .easeInOut(0.15) — removes the lag on appear/disappear
+            // smooth .easeInOut(0.15) — removes the lag on appear/disappear
             if !keyboard.isVisible {
                 Button {
                     keyboardDismissed = false
@@ -164,7 +164,6 @@ struct FileEditorView: View {
     }
 
     // MARK: - Note editor
-    // 3.2: title field above body. Optional — placeholder shows displayTitle fallback.
     private var noteEditor: some View {
         VStack(spacing: 0) {
             TitleTextField(
@@ -233,7 +232,11 @@ struct FileEditorView: View {
                             onDeleteSeparatorAbove: { listState.handleDeleteSeparatorAbove(at: idx) },
                             onCheck: { file.listItems[idx].checked.toggle(); save() },
                             onToggleCollapse: { file.listItems[idx].isCollapsed.toggle(); save() },
-                            onInsertSeparator: { listState.insertSeparator(after: idx) },
+                            onInsertSeparator: {
+                                let blankID = listState.insertSeparator(after: idx)
+                                save()
+                                focusRequest = FocusRequest(itemID: blankID)
+                            },
                             onDismissKeyboard: { keyboardDismissed = true; KeyboardObserver.dismiss() },
                             onChange: { save() }
                         )
