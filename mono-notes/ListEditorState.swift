@@ -72,14 +72,17 @@ final class ListEditorState {
     }
 
     // MARK: Insert separator
+    // Returns the ID of the blank item inserted after the separator so
+    // the caller can issue a FocusRequest without any timing hacks.
 
-    func insertSeparator(after idx: Int) {
+    @discardableResult
+    func insertSeparator(after idx: Int) -> UUID {
         var sep = ListItem(); sep.isSeparator = true
         file.listItems.insert(sep, at: idx + 1)
         let blank = ListItem()
         file.listItems.insert(blank, at: idx + 2)
         onSave()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.focusedItemID = blank.id }
+        return blank.id
     }
 
     // MARK: Prev visible ID
