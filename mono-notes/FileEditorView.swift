@@ -21,6 +21,20 @@ enum EditorNotification {
     }
 }
 
+// MARK: - FocusRequest
+// Wraps a target item ID with a unique token so repeated requests
+// for the same item still trigger .task(id:).
+
+struct FocusRequest: Equatable {
+    let itemID: UUID
+    let token: UUID
+
+    init(itemID: UUID) {
+        self.itemID = itemID
+        self.token = UUID()
+    }
+}
+
 // MARK: - Keyboard visibility observer
 
 final class KeyboardObserver: ObservableObject {
@@ -63,6 +77,11 @@ struct FileEditorView: View {
     @State private var noteEditorFocusRequest: Bool = false
     @State private var noteTitleFocused: Bool = false
 
+    // Replaces asyncAfter(0.05) nil-cycling hacks.
+    // Setting this triggers .task(id: focusRequest) which fires after
+    // the current SwiftUI render pass — safe and deterministic.
+    @State private var focusRequest: FocusRequest? = nil
+
     private var focusedItemID: UUID? {
         get { listState.focusedItemID }
         nonmutating set { listState.focusedItemID = newValue }
@@ -93,10 +112,7 @@ struct FileEditorView: View {
                     } else {
                         let id = listState.focusedItemID ?? file.listItems.first(where: { !$0.isSeparator })?.id
                         if let id {
-                            listState.focusedItemID = nil
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                listState.focusedItemID = id
-                            }
+                            focusRequest = FocusRequest(itemID: id)
                         }
                     }
                 } label: {
@@ -114,6 +130,14 @@ struct FileEditorView: View {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: keyboard.isVisible)
+        .task(id: focusRequest) {
+            guard let req = focusRequest else { return }
+            listState.focusedItemID = nil
+            // One await suspends until after SwiftUI commits the nil,
+            // then we set the real target — no arbitrary timer needed.
+            await Task.yield()
+            listState.focusedItemID = req.itemID
+        }
         .onAppear {
             file = store.findFile(id: initialFile.id) ?? initialFile
             syncState()
@@ -230,15 +254,11 @@ struct FileEditorView: View {
                     keyboardDismissed = false
                     let lastID = file.listItems.last(where: { !$0.isSeparator })?.id
                     if let id = lastID {
-                        listState.focusedItemID = nil
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            listState.focusedItemID = id
-                        }
+                        focusRequest = FocusRequest(itemID: id)
                     } else {
-                        let item = listState.addNewItem(after: nil); save()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            listState.focusedItemID = item.id
-                        }
+                        let item = listState.addNewItem(after: nil)
+                        save()
+                        focusRequest = FocusRequest(itemID: item.id)
                     }
                 }
                 .listRowInsets(EdgeInsets())
